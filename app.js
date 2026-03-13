@@ -1190,6 +1190,16 @@ document.querySelectorAll('.export-view-btn').forEach(btn => {
 // The report is a self-contained HTML document with inline styles,
 // designed for printing or saving as PDF.
 exportGo.addEventListener('click', async () => {
+    // Open the window immediately (synchronously) so mobile browsers
+    // don't block it as a popup. We'll write the report content later.
+    const reportWindow = window.open('', '_blank');
+    if (!reportWindow) {
+        showToast('Popup blocked — please allow popups for this site', 'error');
+        return;
+    }
+    // Show a loading message in the new tab while we prepare the report.
+    reportWindow.document.write('<html><body style="background:#0a0e17;color:#8892a4;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh"><p>Generating report...</p></body></html>');
+
     exportGo.disabled = true;
     exportStatus.hidden = false;
     exportStatus.textContent = 'Preparing map...';
@@ -1332,8 +1342,8 @@ exportGo.addEventListener('click', async () => {
     <script>window.onafterprint=()=>{};window.onload=()=>{document.title='FindMyRocket_Report_${now.toISOString().slice(0,10)}'}<\/script>
 </body></html>`;
 
-    // Open the report in a new tab for printing/saving.
-    const reportWindow = window.open('', '_blank');
+    // Write the finished report into the already-opened tab.
+    reportWindow.document.open();
     reportWindow.document.write(reportHtml);
     reportWindow.document.close();
 
