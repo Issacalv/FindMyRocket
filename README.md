@@ -2,7 +2,7 @@
 
 Landing dispersion calculator for high-power rocketry. Predicts where a rocket will land based on real wind data, deployment altitude, and descent rate.
 
-Live site: findmyrocket.com
+Live site: [findmyrocket.com](findmyrocket.com)
 
 ## What It Does
 
