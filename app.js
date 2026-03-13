@@ -875,7 +875,7 @@ function renderResults(dispersion, lat, lon) {
         for (const layer of primaryProfile) {
             if (layer.altitude > apogee) {
                 layersAbove++;
-                if (layersAbove > 1) break;
+                if (layersAbove > 2) break;
             }
             const alt = useImperial ? (layer.altitude * FT_PER_M).toFixed(0) : Math.round(layer.altitude);
             const spd = useImperial ? (layer.speed * MPH_PER_MS).toFixed(1) : layer.speed.toFixed(1);
