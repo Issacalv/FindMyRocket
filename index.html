@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FindMyRocket — Landing Dispersion Calculator</title>
+    <!-- Leaflet CSS for the interactive map -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <!-- App stylesheet (dark theme, responsive layout) -->
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+    <!-- ===== Header ===== -->
+    <!-- Top bar: rocket icon, app title, subtitle, and metric/imperial toggle -->
+    <header>
+        <div class="header-content">
+            <!-- Rocket SVG icon -->
+            <svg class="rocket-icon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/>
+                <path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/>
+                <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/>
+                <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>
+            </svg>
+            <h1>FindMyRocket</h1>
+            <span class="subtitle">Landing Dispersion Calculator</span>
+            <!-- Unit toggle: switches between metric (m, m/s) and imperial (ft, ft/s) -->
+            <div class="unit-toggle">
+                <button type="button" id="unit-metric" class="unit-btn">Metric</button>
+                <button type="button" id="unit-imperial" class="unit-btn active">Imperial</button>
+            </div>
+        </div>
+    </header>
+
+    <!-- ===== Main Layout ===== -->
+    <!-- Side-by-side on desktop: input panel (left) + map (right) -->
+    <!-- Stacked on mobile: input panel on top, map below -->
+    <main>
+        <!-- ===== Input Panel (Left Sidebar) ===== -->
+        <aside id="input-panel">
+            <form id="calc-form" autocomplete="off" novalidate>
+
+                <!-- --- Launch Location Section --- -->
+                <div class="section-title">Launch Location</div>
+
+                <!-- Search box: queries Nominatim (OpenStreetMap geocoder) -->
+                <div class="search-wrap">
+                    <input type="text" id="location-search" placeholder="Search address or place..." autocomplete="off">
+                    <!-- Dropdown results populated by JS -->
+                    <div id="search-results" class="search-results" hidden></div>
+                </div>
+
+                <!-- GPS button: uses browser Geolocation API -->
+                <button type="button" id="gps-btn" class="btn-secondary">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4M2 12h4m12 0h4"/><circle cx="12" cy="12" r="8"/></svg>
+                    Use My Location
+                </button>
+
+                <!-- Manual coordinate entry -->
+                <div class="input-row" style="margin-top: 0.4rem;">
+                    <div class="input-group">
+                        <label for="latitude">Latitude</label>
+                        <input type="number" id="latitude" step="any" min="-90" max="90" placeholder="35.3470" required>
+                    </div>
+                    <div class="input-group">
+                        <label for="longitude">Longitude</label>
+                        <input type="number" id="longitude" step="any" min="-180" max="180" placeholder="-117.8080" required>
+                    </div>
+                </div>
+
+                <!-- --- Planned Launch Time Section --- -->
+                <div class="section-title">Planned Launch Time</div>
+                <div class="input-row">
+                    <div class="input-group">
+                        <label for="launch-date">Date</label>
+                        <input type="date" id="launch-date" required>
+                    </div>
+                    <div class="input-group">
+                        <label>Time (local)</label>
+                        <!-- Hour and minute dropdowns (populated by JS, 15-min intervals) -->
+                        <div class="time-select-row">
+                            <select id="launch-hour"></select>
+                            <span class="time-colon">:</span>
+                            <select id="launch-min"></select>
+                        </div>
+                    </div>
+                </div>
+                <!-- Sets date/time to the current moment -->
+                <button type="button" id="now-btn" class="btn-secondary">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                    Use Current Time
+                </button>
+
+                <!-- --- Recovery Configuration Section --- -->
+                <div class="section-title">Recovery Configuration</div>
+
+                <!-- Toggle between single deploy (one chute) and dual deploy (drogue + main) -->
+                <div class="deploy-toggle">
+                    <button type="button" id="mode-single" class="deploy-btn active">Single Deploy</button>
+                    <button type="button" id="mode-dual" class="deploy-btn">Dual Deploy</button>
+                </div>
+
+                <!-- Single deploy fields: one altitude + one descent rate -->
+                <!-- max="53150" enforces the hard altitude cap (~16,200m at 100 hPa) -->
+                <div id="single-deploy-fields">
+                    <div class="input-row">
+                        <div class="input-group">
+                            <label for="apogee">Deployment Alt. <span class="unit unit-alt">m AGL</span></label>
+                            <input type="number" id="apogee" step="any" min="1" max="53150" placeholder="500" required>
+                        </div>
+                        <div class="input-group">
+                            <label for="dr1">Descent Rate <span class="unit unit-speed">m/s</span></label>
+                            <input type="number" id="dr1" step="any" min="0.1" placeholder="5" required>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Dual deploy fields: drogue stage (apogee to transition) + main stage (transition to ground) -->
+                <!-- Hidden by default; shown when "Dual Deploy" is selected -->
+                <div id="dual-deploy-fields" hidden>
+                    <div class="subsection-label">Stage 1 — Drogue</div>
+                    <div class="input-row">
+                        <div class="input-group">
+                            <label for="apogee-dual">Apogee Deployment Alt. <span class="unit unit-alt">m AGL</span></label>
+                            <input type="number" id="apogee-dual" step="any" min="1" max="53150" placeholder="500">
+                        </div>
+                        <div class="input-group">
+                            <label for="dr1-dual">Descent Rate <span class="unit unit-speed">m/s</span></label>
+                            <input type="number" id="dr1-dual" step="any" min="0.1" placeholder="15">
+                        </div>
+                    </div>
+                    <div class="subsection-label">Stage 2 — Main Chute</div>
+                    <div class="input-row">
+                        <div class="input-group">
+                            <label for="transition">Main Deployment Alt. <span class="unit unit-alt">m AGL</span></label>
+                            <input type="number" id="transition" step="any" min="0" max="53150" placeholder="200">
+                        </div>
+                        <div class="input-group">
+                            <label for="dr2">Descent Rate <span class="unit unit-speed">m/s</span></label>
+                            <input type="number" id="dr2" step="any" min="0.1" placeholder="5">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Submit button: triggers the dispersion calculation -->
+                <button type="submit" id="calc-btn" class="btn-primary">
+                    Calculate Dispersion
+                </button>
+                <!-- Validation error message (shown/hidden by JS) -->
+                <div id="form-error" class="error-msg" hidden></div>
+            </form>
+        </aside>
+
+        <!-- ===== Map Container ===== -->
+        <!-- The Leaflet map fills this container. Street and satellite layers
+             are available via the layer control in the top-right corner. -->
+        <div id="map-container">
+            <div id="map"></div>
+            <!-- Loading overlay: shown while fetching wind data from the API -->
+            <div id="loading-overlay">
+                <div class="spinner"></div>
+                <span>Fetching wind data...</span>
+            </div>
+        </div>
+    </main>
+
+    <!-- ===== Results Panel ===== -->
+    <!-- Hidden until a calculation completes. Shows predicted landing,
+         drift distance/bearing, descent time, dispersion zone size,
+         forecast time, and the wind profile table. -->
+    <section id="results-panel" hidden>
+        <div class="results-header">
+            <div class="section-title" style="margin-top:0;padding-top:0;border-top:none">Results</div>
+            <!-- Opens the export modal to generate a printable field report -->
+            <button type="button" id="export-btn" class="btn-export">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Export
+            </button>
+        </div>
+        <!-- Result cards: each shows one calculated value -->
+        <div class="results-grid">
+            <div class="result-card">
+                <div class="result-label">Predicted Landing</div>
+                <div class="result-value" id="res-landing">—</div>
+            </div>
+            <div class="result-card">
+                <div class="result-label">Drift Distance</div>
+                <div class="result-value" id="res-distance">—</div>
+            </div>
+            <div class="result-card">
+                <div class="result-label">Drift Bearing</div>
+                <div class="result-value" id="res-bearing">—</div>
+            </div>
+            <div class="result-card">
+                <div class="result-label">Total Descent Time</div>
+                <div class="result-value" id="res-time">—</div>
+            </div>
+            <div class="result-card">
+                <div class="result-label">Dispersion Zone</div>
+                <div class="result-value" id="res-dispersion">—</div>
+            </div>
+            <div class="result-card">
+                <div class="result-label">Forecast Time</div>
+                <div class="result-value" id="res-forecast-time">—</div>
+            </div>
+        </div>
+        <!-- Wind profile table: altitude vs. speed vs. direction -->
+        <div class="section-title" style="margin-top:1rem">Wind Profile</div>
+        <div class="table-wrap">
+            <table id="wind-table">
+                <thead>
+                    <tr>
+                        <!-- Unit labels (ft/m, mph/m/s) updated by JS when toggling units -->
+                        <th>Altitude (<span class="unit-alt-short">m</span>)</th>
+                        <th>Speed (<span class="unit-speed-short">m/s</span>)</th>
+                        <th>Direction</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <!-- Rows populated dynamically by renderResults() -->
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- ===== Export Modal ===== -->
+    <!-- Overlay dialog for configuring and generating the field report.
+         User can choose street/satellite map view and select which data
+         fields to include in the exported HTML report. -->
+    <div id="export-modal" class="modal-overlay" hidden>
+        <div class="modal">
+            <div class="modal-header">
+                <span>Export Field Report</span>
+                <button type="button" id="export-close" class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- Map view selection for the export screenshot -->
+                <div class="export-section">
+                    <div class="export-section-title">Map View</div>
+                    <div class="export-map-toggle">
+                        <button type="button" class="export-view-btn active" data-view="street">Street</button>
+                        <button type="button" class="export-view-btn" data-view="satellite">Satellite</button>
+                    </div>
+                </div>
+                <!-- Checkboxes to select which fields appear in the report -->
+                <div class="export-section">
+                    <div class="export-section-title">Include in Report</div>
+                    <label class="export-check"><input type="checkbox" id="exp-map" checked> Map Screenshot</label>
+                    <label class="export-check"><input type="checkbox" id="exp-landing" checked> Predicted Landing</label>
+                    <label class="export-check"><input type="checkbox" id="exp-distance" checked> Drift Distance</label>
+                    <label class="export-check"><input type="checkbox" id="exp-bearing" checked> Drift Bearing</label>
+                    <label class="export-check"><input type="checkbox" id="exp-time" checked> Descent Time</label>
+                    <label class="export-check"><input type="checkbox" id="exp-dispersion" checked> Dispersion Zone</label>
+                    <label class="export-check"><input type="checkbox" id="exp-forecast"> Forecast Time</label>
+                    <label class="export-check"><input type="checkbox" id="exp-wind"> Wind Profile Table</label>
+                    <label class="export-check"><input type="checkbox" id="exp-launch" checked> Launch Location</label>
+                </div>
+                <!-- Generate button: captures the map and opens the report in a new tab -->
+                <button type="button" id="export-go" class="btn-primary" style="margin-top:0.75rem">
+                    Generate Report
+                </button>
+                <!-- Status text shown during report generation -->
+                <div id="export-status" style="font-size:0.75rem;color:var(--text-secondary);margin-top:0.4rem;text-align:center" hidden></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Leaflet JS library (map rendering, tile layers, markers, overlays) -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- App logic: all calculation, rendering, and interaction code -->
+    <script src="app.js"></script>
+</body>
+</html>

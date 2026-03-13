@@ -1,0 +1,816 @@
+/* =============================================================
+   FindMyRocket — Stylesheet
+   Dark-themed UI with orange (#ff4c29) and cyan (#00d4ff) accents.
+   Uses CSS custom properties for consistent theming throughout.
+   ============================================================= */
+
+/* ===== Reset & CSS Variables ===== */
+/* Global box-sizing reset to simplify layout calculations */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+    /* Background colors (dark theme, from darkest to lightest) */
+    --bg-primary: #0a0e17;       /* Page background */
+    --bg-secondary: #141b2d;     /* Sidebar and results panel background */
+    --bg-card: #1a2236;          /* Card and input field background */
+
+    /* Accent colors */
+    --accent: #ff4c29;           /* Primary accent: orange (buttons, launch markers) */
+    --accent-glow: rgba(255, 76, 41, 0.4);   /* Orange glow for hover effects */
+    --accent2: #00d4ff;          /* Secondary accent: cyan (section titles, landing markers) */
+    --accent2-glow: rgba(0, 212, 255, 0.3);  /* Cyan glow for focus rings */
+
+    /* Text colors */
+    --text-primary: #e0e6f0;     /* Main body text */
+    --text-secondary: #8892a4;   /* Muted text (labels, hints) */
+
+    /* Shared values */
+    --border: #2a3450;           /* Border color for cards, inputs, and dividers */
+    --radius: 8px;               /* Default border radius for rounded corners */
+}
+
+/* Base body styles: dark background, full viewport height, flex column layout */
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* ===== Header ===== */
+/* Top bar with gradient background, contains app title and unit toggle */
+header {
+    background: linear-gradient(135deg, #0f1525 0%, #1a1035 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 0.75rem 1.25rem;
+}
+
+/* Horizontal layout for header items: icon, title, subtitle, unit toggle */
+.header-content {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+/* Rocket SVG icon in the header */
+.rocket-icon { color: var(--accent); flex-shrink: 0; }
+
+/* App title with gradient text effect (orange → warm orange) */
+header h1 {
+    font-size: 1.25rem;
+    font-weight: 700;
+    background: linear-gradient(90deg, var(--accent), #ff8c42);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+/* Subtitle text next to the app title */
+.subtitle {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    margin-left: 0.25rem;
+}
+
+/* ===== Unit Toggle (Metric/Imperial) ===== */
+/* Button group pushed to the right side of the header */
+.unit-toggle {
+    margin-left: auto;
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+
+/* Individual unit toggle button */
+.unit-btn {
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    border: none;
+    padding: 0.3rem 0.7rem;
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
+}
+
+/* Divider between the two unit buttons */
+.unit-btn + .unit-btn { border-left: 1px solid var(--border); }
+
+/* Active/selected state: highlighted with accent orange */
+.unit-btn.active {
+    background: var(--accent);
+    color: #fff;
+}
+
+/* ===== Main Layout ===== */
+/* Side-by-side layout: input panel (left) + map (right) */
+main {
+    display: flex;
+    flex: 1;
+    min-height: 0; /* Allows flex children to shrink below content height */
+}
+
+/* ===== Input Panel (Left Sidebar) ===== */
+/* Contains the form with all input fields */
+#input-panel {
+    width: 360px;
+    flex-shrink: 0;
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border);
+    padding: 1.25rem;
+    overflow-y: auto; /* Scrollable when content exceeds viewport */
+}
+
+/* Section divider titles (e.g., "Launch Location", "Recovery Configuration") */
+.section-title {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent2);
+    font-weight: 600;
+    margin-bottom: 0.6rem;
+    margin-top: 1.25rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+}
+
+/* First section title doesn't need a top border or extra margin */
+.section-title:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+
+/* Horizontal row of input fields side by side */
+.input-row {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.6rem;
+}
+
+/* Individual input group: label + input stacked vertically */
+.input-group {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}
+
+/* Form labels */
+label {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+/* Unit indicator text within labels (e.g., "ft AGL", "m/s") */
+.unit {
+    color: var(--accent2);
+    font-size: 0.65rem;
+}
+
+/* ===== Form Inputs ===== */
+/* Styled dark inputs with monospace font for numeric values */
+input[type="number"],
+input[type="date"],
+input[type="time"] {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.5rem 0.6rem;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    font-family: 'Consolas', 'SF Mono', monospace;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    width: 100%;
+    color-scheme: dark; /* Dark theme for native date/time picker UI */
+}
+
+/* Focus state: cyan border with glow ring */
+input[type="number"]:focus,
+input[type="date"]:focus,
+input[type="time"]:focus {
+    border-color: var(--accent2);
+    box-shadow: 0 0 0 3px var(--accent2-glow);
+}
+
+/* Invalid state: orange border to indicate validation error */
+input[type="number"]:invalid {
+    border-color: var(--accent);
+}
+
+/* ===== Time Select Row ===== */
+/* Horizontal layout for hour : minute dropdowns */
+.time-select-row {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+/* The ":" separator between hour and minute selects */
+.time-colon {
+    color: var(--text-secondary);
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+/* Dropdown select elements (hour, minute) */
+select {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.5rem 0.4rem;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    font-family: 'Consolas', 'SF Mono', monospace;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    flex: 1;
+    cursor: pointer;
+    color-scheme: dark;
+}
+
+/* Focus state for selects */
+select:focus {
+    border-color: var(--accent2);
+    box-shadow: 0 0 0 3px var(--accent2-glow);
+}
+
+/* ===== Location Search ===== */
+/* Wrapper for the search input and results dropdown */
+.search-wrap {
+    position: relative; /* Anchor for the absolute-positioned dropdown */
+    margin-bottom: 0.5rem;
+}
+
+/* Location search text input */
+#location-search {
+    width: 100%;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.5rem 0.6rem;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+#location-search:focus {
+    border-color: var(--accent2);
+    box-shadow: 0 0 0 3px var(--accent2-glow);
+}
+
+#location-search::placeholder {
+    color: var(--text-secondary);
+}
+
+/* Dropdown container for search results */
+.search-results {
+    position: absolute;
+    top: 100%;          /* Position directly below the search input */
+    left: 0;
+    right: 0;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-top: none;   /* Seamless connection to the input above */
+    border-radius: 0 0 var(--radius) var(--radius);
+    max-height: 200px;
+    overflow-y: auto;
+    z-index: 100;       /* Float above map and other content */
+}
+
+/* Individual search result item */
+.search-result-item {
+    padding: 0.5rem 0.6rem;
+    font-size: 0.8rem;
+    color: var(--text-primary);
+    cursor: pointer;
+    border-bottom: 1px solid rgba(42, 52, 80, 0.4);
+    transition: background 0.15s;
+}
+
+.search-result-item:last-child { border-bottom: none; }
+
+/* Hover highlight for search results */
+.search-result-item:hover {
+    background: var(--bg-secondary);
+}
+
+/* "No results found" message */
+.search-no-results {
+    padding: 0.5rem 0.6rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+/* ===== Deploy Mode Toggle (Single/Dual Deploy) ===== */
+/* Button group to switch between recovery configurations */
+.deploy-toggle {
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    margin-bottom: 0.75rem;
+}
+
+/* Individual deploy mode button */
+.deploy-btn {
+    flex: 1;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    border: none;
+    padding: 0.4rem 0.5rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
+}
+
+/* Divider between deploy buttons */
+.deploy-btn + .deploy-btn { border-left: 1px solid var(--border); }
+
+/* Active deploy mode: highlighted with cyan accent */
+.deploy-btn.active {
+    background: var(--accent2);
+    color: #fff;
+}
+
+/* Sub-labels within the dual deploy section (e.g., "Stage 1 — Drogue") */
+.subsection-label {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+    margin-bottom: 0.35rem;
+    margin-top: 0.5rem;
+}
+
+/* ===== Coordinates Display ===== */
+/* Styled display box for showing current coordinates */
+.coords-display {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+    padding: 0.45rem 0.6rem;
+    background: rgba(0, 212, 255, 0.05);
+    border: 1px solid rgba(0, 212, 255, 0.15);
+    border-radius: var(--radius);
+}
+
+.coords-label {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+/* Monospace cyan text for coordinate values */
+.coords-value {
+    font-size: 0.8rem;
+    font-family: 'Consolas', 'SF Mono', monospace;
+    color: var(--accent2);
+}
+
+/* Empty state when no coordinates are set */
+.coords-value.empty {
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-style: italic;
+    font-size: 0.75rem;
+}
+
+/* ===== Buttons ===== */
+
+/* Primary action button (orange gradient, e.g., "Calculate Dispersion") */
+.btn-primary {
+    width: 100%;
+    padding: 0.7rem;
+    margin-top: 1rem;
+    border: none;
+    border-radius: var(--radius);
+    background: linear-gradient(135deg, var(--accent), #ff8c42);
+    color: #fff;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: box-shadow 0.2s, transform 0.1s;
+}
+
+/* Hover glow effect on primary button */
+.btn-primary:hover {
+    box-shadow: 0 0 18px var(--accent-glow);
+}
+
+/* Click feedback: slight scale down */
+.btn-primary:active { transform: scale(0.98); }
+
+/* Disabled state: reduced opacity, no pointer */
+.btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Secondary button (outlined, e.g., "Use My Location", "Use Current Time") */
+.btn-secondary {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    width: 100%;
+    padding: 0.45rem;
+    margin-bottom: 0.4rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    cursor: pointer;
+    transition: border-color 0.2s, color 0.2s;
+}
+
+/* Hover: highlight border and text with cyan */
+.btn-secondary:hover {
+    border-color: var(--accent2);
+    color: var(--accent2);
+}
+
+/* Form error message (shown below the submit button) */
+.error-msg {
+    color: var(--accent);
+    font-size: 0.78rem;
+    margin-top: 0.5rem;
+}
+
+/* ===== Map Container ===== */
+/* Takes up all remaining horizontal space to the right of the input panel */
+#map-container {
+    flex: 1;
+    position: relative; /* Anchor for the loading overlay */
+    min-height: 400px;
+}
+
+/* The Leaflet map fills its container */
+#map { width: 100%; height: 100%; }
+
+/* Loading overlay: semi-transparent dark backdrop over the map with spinner */
+#loading-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(10, 14, 23, 0.8);
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 1rem;
+    z-index: 1000;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    display: none; /* Hidden by default */
+}
+
+/* Active state: shown when fetching data */
+#loading-overlay.active {
+    display: flex;
+}
+
+/* Spinning circle animation for the loading indicator */
+.spinner {
+    width: 36px;
+    height: 36px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent); /* Orange top edge creates the spinning effect */
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ===== Results Panel ===== */
+/* Shown below the map after a calculation completes */
+#results-panel {
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    padding: 1rem 1.25rem;
+}
+
+/* Responsive grid of result cards */
+.results-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 0.6rem;
+}
+
+/* Individual result card (e.g., "Drift Distance", "Bearing") */
+.result-card {
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    padding: 0.6rem 0.75rem;
+    border: 1px solid var(--border);
+}
+
+/* Small uppercase label above each result value */
+.result-label {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+    margin-bottom: 0.2rem;
+}
+
+/* Monospace, bold result value */
+.result-value {
+    font-size: 1rem;
+    font-weight: 600;
+    font-family: 'Consolas', 'SF Mono', monospace;
+}
+
+/* ===== Wind Profile Table ===== */
+/* Horizontal scroll wrapper for the wind data table on narrow screens */
+.table-wrap { overflow-x: auto; }
+
+#wind-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+    margin-top: 0.4rem;
+}
+
+/* Table header cells */
+#wind-table th {
+    text-align: left;
+    padding: 0.4rem 0.6rem;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border);
+    font-weight: 500;
+}
+
+/* Table data cells: monospace font for numeric alignment */
+#wind-table td {
+    padding: 0.35rem 0.6rem;
+    border-bottom: 1px solid rgba(42, 52, 80, 0.4);
+    font-family: 'Consolas', 'SF Mono', monospace;
+}
+
+/* ===== Responsive Breakpoints ===== */
+
+/* Tablet and below: stack layout vertically */
+@media (max-width: 768px) {
+    /* Switch from side-by-side to stacked layout */
+    main {
+        flex-direction: column;
+        min-height: auto;
+    }
+
+    /* Input panel takes full width on mobile */
+    #input-panel {
+        width: 100%;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+        max-height: none;
+        overflow-y: visible;
+        padding: 1rem;
+    }
+
+    /* Map gets fixed height on mobile to ensure it's visible */
+    #map-container {
+        min-height: 50vh;
+        height: 50vh;
+        flex-shrink: 0;
+    }
+
+    .header-content { padding: 0; }
+
+    header h1 { font-size: 1.1rem; }
+
+    /* Hide subtitle on small screens to save space */
+    .subtitle { display: none; }
+
+    /* Stack input fields vertically on mobile */
+    .input-row { flex-direction: column; gap: 0.5rem; }
+
+    /* Set font-size to 16px to prevent iOS auto-zoom on input focus */
+    input[type="number"],
+    input[type="date"],
+    input[type="time"],
+    select {
+        font-size: 16px;
+        padding: 0.6rem;
+    }
+
+    /* Make the calculate button sticky at the bottom of the scrollable form */
+    .btn-primary {
+        padding: 0.85rem;
+        font-size: 1rem;
+        position: sticky;
+        bottom: 0;
+        z-index: 10;
+    }
+
+    .btn-secondary { padding: 0.55rem; }
+
+    /* 2-column grid for results on tablet */
+    .results-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 0.5rem;
+    }
+
+    .result-card { padding: 0.5rem 0.6rem; }
+    .result-value { font-size: 0.9rem; }
+
+    .deploy-toggle, .unit-toggle { gap: 0; }
+    .deploy-btn, .unit-btn { padding: 0.45rem 0.5rem; }
+
+    /* Modal fills most of the screen on mobile */
+    .modal {
+        width: calc(100% - 2rem);
+        max-height: 90vh;
+    }
+
+    #results-panel { padding: 0.75rem 1rem; }
+
+    .section-title { margin-top: 1rem; padding-top: 0.75rem; }
+}
+
+/* Very small phones: single-column results */
+@media (max-width: 400px) {
+    .results-grid { grid-template-columns: 1fr; }
+
+    .header-content { gap: 0.3rem; }
+
+    header h1 { font-size: 1rem; }
+
+    .unit-btn { font-size: 0.65rem; padding: 0.3rem 0.5rem; }
+}
+
+/* ===== Toast Notifications ===== */
+/* Temporary messages that appear at the bottom center of the screen */
+.toast {
+    position: fixed;
+    bottom: 1.5rem;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.6rem 1.2rem;
+    font-size: 0.85rem;
+    z-index: 2000;
+    animation: fadeInUp 0.3s ease;
+}
+
+/* Error toast variant: orange border and text */
+.toast.error { border-color: var(--accent); color: var(--accent); }
+
+/* Toast entrance animation: fade in and slide up */
+@keyframes fadeInUp {
+    from { opacity: 0; transform: translateX(-50%) translateY(10px); }
+    to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* ===== Results Header ===== */
+/* Row containing the "Results" title and the export button */
+.results-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.4rem;
+}
+
+/* Export button: cyan outlined style */
+.btn-export {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.75rem;
+    border: 1px solid var(--accent2);
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--accent2);
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
+}
+
+/* Hover: fill with cyan background */
+.btn-export:hover {
+    background: var(--accent2);
+    color: #fff;
+}
+
+/* ===== Export Modal ===== */
+/* Full-screen overlay with centered modal dialog */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7); /* Dark semi-transparent backdrop */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 5000;
+}
+
+/* Hidden state for the modal overlay */
+.modal-overlay[hidden] { display: none; }
+
+/* Modal dialog box */
+.modal {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    width: 360px;
+    max-height: 85vh;
+    overflow-y: auto;
+}
+
+/* Modal header with title and close button */
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+/* Modal close button (×) */
+.modal-close {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 1.3rem;
+    cursor: pointer;
+    line-height: 1;
+}
+
+.modal-close:hover { color: var(--text-primary); }
+
+/* Modal body content area */
+.modal-body {
+    padding: 1rem;
+}
+
+/* Sections within the export modal */
+.export-section {
+    margin-bottom: 0.75rem;
+}
+
+/* Section titles within the export modal */
+.export-section-title {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--accent2);
+    font-weight: 600;
+    margin-bottom: 0.4rem;
+}
+
+/* Map view toggle (Street/Satellite) in the export modal */
+.export-map-toggle {
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+
+/* Individual map view toggle button */
+.export-view-btn {
+    flex: 1;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    border: none;
+    padding: 0.35rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
+}
+
+/* Divider between map view buttons */
+.export-view-btn + .export-view-btn { border-left: 1px solid var(--border); }
+
+/* Active map view: highlighted with cyan */
+.export-view-btn.active {
+    background: var(--accent2);
+    color: #fff;
+}
+
+/* Checkbox row in the export modal (e.g., "Include Map Screenshot") */
+.export-check {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 0;
+    font-size: 0.82rem;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+/* Style the checkboxes with the cyan accent color */
+.export-check input[type="checkbox"] {
+    accent-color: var(--accent2);
+    width: 16px;
+    height: 16px;
+}
