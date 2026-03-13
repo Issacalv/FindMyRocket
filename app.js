@@ -688,7 +688,7 @@ function calculateDispersion(apiData, apogee, transitionAlt, dr1, dr2, lat, lon,
     // Fit a 95% confidence ellipse to all landing points.
     const ellipse = fitEllipse(landingPoints, lat);
     const forecastTime = times[baseIdx];
-    return { primaryResult, primaryProfile, ellipse, landingPoints, forecastTime };
+    return { primaryResult, primaryProfile, ellipse, landingPoints, forecastTime, apogee };
 }
 
 // Fits a 2-sigma (95% confidence) ellipse to a set of landing points
@@ -773,7 +773,7 @@ function renderResults(dispersion, lat, lon) {
     lastDispersion = dispersion;
     lastLaunchLat = lat;
     lastLaunchLon = lon;
-    const { primaryResult, primaryProfile, ellipse, forecastTime } = dispersion;
+    const { primaryResult, primaryProfile, ellipse, forecastTime, apogee } = dispersion;
 
     // Clear previous overlays (markers, paths, ellipse).
     mapLayers.clearLayers();
@@ -868,7 +868,15 @@ function renderResults(dispersion, lat, lon) {
     const tbody = document.querySelector('#wind-table tbody');
     tbody.innerHTML = '';
     if (primaryProfile) {
+        // Only show wind layers up to the deployment altitude, plus one
+        // layer above it for context. No need to show 50,000 ft winds
+        // when the rocket only reaches 1,000 ft.
+        let layersAbove = 0;
         for (const layer of primaryProfile) {
+            if (layer.altitude > apogee) {
+                layersAbove++;
+                if (layersAbove > 1) break;
+            }
             const alt = useImperial ? (layer.altitude * FT_PER_M).toFixed(0) : Math.round(layer.altitude);
             const spd = useImperial ? (layer.speed * MPH_PER_MS).toFixed(1) : layer.speed.toFixed(1);
             const tr = document.createElement('tr');
