@@ -814,3 +814,107 @@ select:focus {
     width: 16px;
     height: 16px;
 }
+
+/* ===== OpenRocket Import Summary Card ===== */
+.ork-summary {
+    background: rgba(0, 212, 255, 0.05);
+    border: 1px solid rgba(0, 212, 255, 0.15);
+    border-radius: var(--radius);
+    padding: 0.5rem 0.6rem;
+    margin-bottom: 0.75rem;
+}
+
+.ork-summary-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.35rem;
+}
+
+.ork-summary-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--accent2);
+}
+
+.ork-clear-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 1.1rem;
+    cursor: pointer;
+    line-height: 1;
+    padding: 0 0.2rem;
+}
+.ork-clear-btn:hover { color: var(--accent); }
+
+.ork-summary-details {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}
+
+.ork-detail {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.75rem;
+}
+
+.ork-detail-label {
+    color: var(--text-secondary);
+}
+
+.ork-detail span:last-child {
+    font-family: 'Consolas', 'SF Mono', monospace;
+    color: var(--text-primary);
+}
+
+/* ===== Descent Rate Calculator ===== */
+.dr-calc {
+    margin-bottom: 0.75rem;
+}
+
+.dr-calc-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 0.35rem 0;
+    list-style: none;
+}
+.dr-calc-toggle::-webkit-details-marker { display: none; }
+.dr-calc-toggle:hover { color: var(--accent2); }
+
+.dr-calc-body {
+    padding-top: 0.5rem;
+}
+
+.dr-calc-result {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.5rem 0.6rem;
+    font-family: 'Consolas', 'SF Mono', monospace;
+    font-size: 0.9rem;
+    color: var(--accent2);
+}
+
+/* ===== Auto-filled Input Highlight ===== */
+/* Applied to inputs that were auto-populated by .ork import or the calculator */
+input.auto-filled {
+    border-color: var(--accent2);
+    background: rgba(0, 212, 255, 0.08);
+}
+
+.dr-calc-actions {
+    display: flex;
+    gap: 0.4rem;
+}
+
+.dr-calc-apply {
+    flex: 1;
+    font-size: 0.72rem;
+    padding: 0.35rem 0.4rem;
+}

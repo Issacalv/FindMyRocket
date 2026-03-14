@@ -318,19 +318,32 @@ function updateUnitLabels() {
     $('dr1-dual').placeholder = useImperial ? '49' : '15';
     transitionInput.placeholder = useImperial ? '656' : '200';
     dr2Input.placeholder = useImperial ? '16' : '5';
+
+    // Descent rate calculator units
+    const calcMassUnit = $('calc-mass-unit');
+    if (calcMassUnit) {
+        calcMassUnit.textContent = useImperial ? 'lb' : 'kg';
+        $('calc-dia-unit').textContent = useImperial ? 'in' : 'm';
+        $('calc-mass').placeholder = useImperial ? '8' : '3.5';
+        $('calc-diameter').placeholder = useImperial ? '48' : '1.2';
+    }
 }
 
 // Converts all current input values between imperial and metric.
 // Each field has a conversion factor: altitude fields use FT_PER_M,
 // speed fields use FPS_PER_MS.
 function convertInputValues(toImperial) {
+    const LB_PER_KG = 2.20462;
+    const IN_PER_M = 39.3701;
     const fields = [
         { input: apogeeInput, factor: FT_PER_M },
         { input: dr1Input, factor: FPS_PER_MS },
         { input: $('apogee-dual'), factor: FT_PER_M },
         { input: $('dr1-dual'), factor: FPS_PER_MS },
         { input: transitionInput, factor: FT_PER_M },
-        { input: dr2Input, factor: FPS_PER_MS }
+        { input: dr2Input, factor: FPS_PER_MS },
+        { input: $('calc-mass'), factor: LB_PER_KG },
+        { input: $('calc-diameter'), factor: IN_PER_M }
     ];
     for (const { input, factor } of fields) {
         const val = parseFloat(input.value);
@@ -804,6 +817,26 @@ function renderResults(dispersion, lat, lon) {
         }).addTo(mapLayers);
     }
 
+    // Ascent path from OpenRocket simulation data (if available).
+    if (orkFlightData && orkFlightData.ascentProfile && primaryProfile) {
+        const ascentPath = calculateAscentDrift(orkFlightData.ascentProfile, primaryProfile, lat, lon);
+        if (ascentPath.length > 1) {
+            L.polyline(ascentPath, {
+                color: '#00d4ff', weight: 2, opacity: 0.5, dashArray: '4,6'
+            }).addTo(mapLayers);
+
+            // Apogee marker (orange dot at the top of the ascent path).
+            const apogeePoint = ascentPath[ascentPath.length - 1];
+            const apogeeIcon = L.divIcon({
+                html: '<div style="background:#ff8c42;width:10px;height:10px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 6px rgba(255,140,66,0.6)"></div>',
+                className: '', iconSize: [10, 10], iconAnchor: [5, 5]
+            });
+            L.marker(apogeePoint, { icon: apogeeIcon })
+                .bindPopup('<b>Apogee</b>')
+                .addTo(mapLayers);
+        }
+    }
+
     // Auto-zoom the map to fit all overlays with some padding.
     const bounds = L.latLngBounds([[lat, lon], [primaryResult.landingLat, primaryResult.landingLon]]);
     if (ellipse) {
@@ -1054,6 +1087,409 @@ modeDualBtn.addEventListener('click', () => {
     transitionInput.required = true;
     dr2Input.required = true;
 });
+
+// ============================================================
+// OPENROCKET (.ork) FILE IMPORT
+// ============================================================
+
+// State for imported OpenRocket data (used for ascent visualization).
+let orkFlightData = null;
+
+// Marks an input as auto-filled (cyan highlight). The highlight clears
+// when the user manually edits the field.
+function markAutoFilled(input) {
+    input.classList.add('auto-filled');
+    input.addEventListener('input', function handler() {
+        input.classList.remove('auto-filled');
+        input.removeEventListener('input', handler);
+    });
+}
+
+function clearAutoFilled() {
+    document.querySelectorAll('.auto-filled').forEach(el => el.classList.remove('auto-filled'));
+}
+
+const orkImportBtn = $('ork-import-btn');
+const orkFileInput = $('ork-file-input');
+const orkSummary = $('ork-summary');
+
+orkImportBtn.addEventListener('click', () => orkFileInput.click());
+
+orkFileInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+        const orkData = await parseOrkFile(file);
+        applyOrkData(orkData);
+        showToast(`Imported: ${orkData.rocketName}`);
+    } catch (err) {
+        console.error('ORK import error:', err);
+        showToast(err.message || 'Failed to parse .ork file', 'error');
+    }
+    orkFileInput.value = '';
+});
+
+// Parses an .ork file (ZIP archive containing rocket.ork XML).
+async function parseOrkFile(file) {
+    const buffer = await file.arrayBuffer();
+    let xmlString;
+
+    try {
+        const zip = await JSZip.loadAsync(buffer);
+        const xmlFile = Object.values(zip.files).find(f =>
+            !f.dir && (f.name.endsWith('.ork') || f.name.endsWith('.xml'))
+        );
+        if (!xmlFile) throw new Error('No rocket data found in archive');
+        xmlString = await xmlFile.async('string');
+    } catch (zipErr) {
+        // Fallback: might be raw XML (older .ork format).
+        xmlString = new TextDecoder().decode(buffer);
+    }
+
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(xmlString, 'text/xml');
+
+    if (doc.querySelector('parsererror')) throw new Error('Invalid .ork file format');
+    if (doc.documentElement.tagName !== 'openrocket') throw new Error('Not a valid OpenRocket file');
+
+    return extractOrkData(doc);
+}
+
+// Walks the OpenRocket XML DOM and extracts rocket info, recovery
+// devices, motor designation, mass, and simulation data.
+function extractOrkData(doc) {
+    const result = {
+        rocketName: '',
+        motorDesignation: '',
+        totalMass: null,
+        parachutes: [],
+        simulationData: null,
+        isDualDeploy: false,
+        deploymentAltitude: null,
+        mainDeployAltitude: null,
+    };
+
+    // Rocket name.
+    const rocketNameEl = doc.querySelector('rocket > name');
+    result.rocketName = rocketNameEl ? rocketNameEl.textContent.trim() : file.name.replace('.ork', '');
+
+    // Motor designation: find the default motor config, then match its motor.
+    const defaultConfig = doc.querySelector('motorconfiguration[default="true"]');
+    const configId = defaultConfig ? defaultConfig.getAttribute('configid') : null;
+    if (configId) {
+        const motor = doc.querySelector(`motor[configid="${configId}"]`);
+        if (motor) {
+            const desig = motor.querySelector('designation');
+            const mfg = motor.querySelector('manufacturer');
+            result.motorDesignation = desig ? desig.textContent.trim() : '';
+            if (mfg) result.motorDesignation = mfg.textContent.trim() + ' ' + result.motorDesignation;
+        }
+    }
+    // Fallback: use the first motor found.
+    if (!result.motorDesignation) {
+        const firstMotor = doc.querySelector('motor[configid] designation');
+        if (firstMotor) result.motorDesignation = firstMotor.textContent.trim();
+    }
+
+    // Recovery devices (parachutes).
+    const parachuteEls = doc.querySelectorAll('parachute');
+    for (const p of parachuteEls) {
+        const diameter = parseFloat(p.querySelector('diameter')?.textContent) || 0;
+        const cdText = p.querySelector('cd')?.textContent || '';
+        const cd = cdText === 'auto' ? 0.75 : (parseFloat(cdText) || 0.75);
+        const deployEvent = (p.querySelector('deployevent')?.textContent || 'apogee').toLowerCase();
+        const deployAltitude = parseFloat(p.querySelector('deployaltitude')?.textContent) || 0;
+        const name = p.querySelector('name')?.textContent?.trim() || '';
+
+        result.parachutes.push({ name, diameter, cd, deployEvent, deployAltitude });
+    }
+
+    // Detect dual deploy: need at least one apogee chute and one altitude chute.
+    const apogeeChutes = result.parachutes.filter(p => p.deployEvent === 'apogee');
+    const altitudeChutes = result.parachutes.filter(p => p.deployEvent === 'altitude');
+    if (apogeeChutes.length > 0 && altitudeChutes.length > 0) {
+        result.isDualDeploy = true;
+    }
+
+    // Simulation data: find the first uptodate sim, or fall back to first sim.
+    const sims = doc.querySelectorAll('simulation');
+    let bestSim = null;
+    for (const sim of sims) {
+        if (sim.getAttribute('status') === 'uptodate') { bestSim = sim; break; }
+    }
+    if (!bestSim && sims.length > 0) bestSim = sims[0];
+
+    if (bestSim) {
+        const fd = bestSim.querySelector('flightdata');
+        if (fd) {
+            const maxAlt = parseFloat(fd.getAttribute('maxaltitude'));
+            if (!isNaN(maxAlt)) result.deploymentAltitude = maxAlt;
+
+            // Extract mass from the first datapoint (column 19 = Mass in kg).
+            const branch = fd.querySelector('databranch');
+            if (branch) {
+                const typesStr = branch.getAttribute('types') || '';
+                const types = typesStr.split(',');
+                const massIdx = types.indexOf('Mass');
+                const altIdx = types.indexOf('Altitude');
+                const timeIdx = types.indexOf('Time');
+
+                const datapoints = branch.querySelectorAll('datapoint');
+                if (datapoints.length > 0 && massIdx >= 0) {
+                    const firstVals = datapoints[0].textContent.trim().split(/\s*,\s*/);
+                    const mass = parseFloat(firstVals[massIdx]);
+                    if (!isNaN(mass) && mass > 0) result.totalMass = mass;
+                }
+
+                // Extract ascent profile (time, altitude) for flight visualization.
+                if (timeIdx >= 0 && altIdx >= 0) {
+                    const ascentProfile = [];
+                    for (const dp of datapoints) {
+                        const vals = dp.textContent.trim().split(/\s*,\s*/);
+                        const time = parseFloat(vals[timeIdx]);
+                        const alt = parseFloat(vals[altIdx]);
+                        if (!isNaN(time) && !isNaN(alt)) {
+                            ascentProfile.push({ time, altitude: alt });
+                            // Stop after apogee (altitude starts decreasing).
+                            if (ascentProfile.length > 2 && alt < ascentProfile[ascentProfile.length - 2].altitude) break;
+                        }
+                    }
+                    if (ascentProfile.length > 2) {
+                        result.simulationData = { ascentProfile };
+                    }
+                }
+
+                // Extract events.
+                const events = [];
+                const eventEls = branch.querySelectorAll('event');
+                for (const ev of eventEls) {
+                    events.push({
+                        time: parseFloat(ev.getAttribute('time')) || 0,
+                        type: (ev.getAttribute('type') || '').toLowerCase(),
+                    });
+                }
+                if (result.simulationData) result.simulationData.events = events;
+            }
+        }
+    }
+
+    // If we have altitude chutes, find the main deploy altitude.
+    if (altitudeChutes.length > 0) {
+        // Pick the altitude chute with the largest diameter (the main).
+        const mainChute = altitudeChutes.reduce((a, b) => a.diameter > b.diameter ? a : b);
+        result.mainDeployAltitude = mainChute.deployAltitude;
+    }
+
+    return result;
+}
+
+// Applies parsed .ork data to the form fields and shows the summary card.
+function applyOrkData(orkData) {
+    const AIR_DENSITY = 1.225;
+    const GRAVITY = 9.81;
+
+    function calcDescentRate(mass, diameter, cd) {
+        const area = Math.PI * Math.pow(diameter / 2, 2);
+        return Math.sqrt((2 * mass * GRAVITY) / (AIR_DENSITY * cd * area));
+    }
+
+    // Show summary card.
+    $('ork-rocket-name').textContent = orkData.rocketName || 'Unknown Rocket';
+    $('ork-motor').textContent = orkData.motorDesignation || '—';
+    $('ork-mass').textContent = orkData.totalMass
+        ? (useImperial ? `${(orkData.totalMass * 2.20462).toFixed(2)} lb` : `${orkData.totalMass.toFixed(2)} kg`)
+        : '—';
+
+    // Store simulation data for ascent visualization.
+    orkFlightData = orkData.simulationData;
+
+    if (orkData.isDualDeploy) {
+        // Switch to dual deploy mode.
+        if (!dualDeploy) modeDualBtn.click();
+
+        const drogue = orkData.parachutes.find(p => p.deployEvent === 'apogee');
+        const mainChutes = orkData.parachutes.filter(p => p.deployEvent === 'altitude');
+        const main = mainChutes.length > 0
+            ? mainChutes.reduce((a, b) => a.diameter > b.diameter ? a : b)
+            : null;
+
+        if (orkData.deploymentAltitude != null) {
+            apogeeDualInput.value = useImperial
+                ? (orkData.deploymentAltitude * FT_PER_M).toFixed(0)
+                : orkData.deploymentAltitude.toFixed(0);
+            markAutoFilled(apogeeDualInput);
+        }
+
+        if (drogue && orkData.totalMass) {
+            const dr1 = calcDescentRate(orkData.totalMass, drogue.diameter, drogue.cd);
+            dr1DualInput.value = useImperial ? (dr1 * FPS_PER_MS).toFixed(1) : dr1.toFixed(1);
+            markAutoFilled(dr1DualInput);
+        }
+        if (main) {
+            transitionInput.value = useImperial
+                ? (main.deployAltitude * FT_PER_M).toFixed(0)
+                : main.deployAltitude.toFixed(0);
+            markAutoFilled(transitionInput);
+            if (orkData.totalMass) {
+                const dr2 = calcDescentRate(orkData.totalMass, main.diameter, main.cd);
+                dr2Input.value = useImperial ? (dr2 * FPS_PER_MS).toFixed(1) : dr2.toFixed(1);
+                markAutoFilled(dr2Input);
+            }
+        }
+
+        $('ork-recovery').textContent = 'Dual Deploy';
+    } else {
+        // Switch to single deploy mode.
+        if (dualDeploy) modeSingleBtn.click();
+
+        const chute = orkData.parachutes[0];
+        if (orkData.deploymentAltitude != null) {
+            apogeeInput.value = useImperial
+                ? (orkData.deploymentAltitude * FT_PER_M).toFixed(0)
+                : orkData.deploymentAltitude.toFixed(0);
+            markAutoFilled(apogeeInput);
+        }
+        if (chute && orkData.totalMass) {
+            const dr = calcDescentRate(orkData.totalMass, chute.diameter, chute.cd);
+            dr1Input.value = useImperial ? (dr * FPS_PER_MS).toFixed(1) : dr.toFixed(1);
+            markAutoFilled(dr1Input);
+        }
+
+        $('ork-recovery').textContent = 'Single Deploy';
+    }
+
+    // Populate calculator fields with rocket data if available.
+    if (orkData.totalMass) {
+        const massEl = $('calc-mass');
+        massEl.value = useImperial
+            ? (orkData.totalMass * 2.20462).toFixed(2)
+            : orkData.totalMass.toFixed(2);
+        markAutoFilled(massEl);
+    }
+
+    // Fill chute diameter and Cd from the primary parachute.
+    const primaryChute = orkData.isDualDeploy
+        ? orkData.parachutes.filter(p => p.deployEvent === 'altitude')
+            .reduce((a, b) => a.diameter > b.diameter ? a : b, orkData.parachutes[0])
+        : orkData.parachutes[0];
+    if (primaryChute) {
+        const diaEl = $('calc-diameter');
+        diaEl.value = useImperial
+            ? (primaryChute.diameter * 39.3701).toFixed(1)
+            : primaryChute.diameter.toFixed(3);
+        markAutoFilled(diaEl);
+
+        const cdEl = $('calc-cd');
+        cdEl.value = primaryChute.cd;
+        markAutoFilled(cdEl);
+    }
+
+    orkSummary.hidden = false;
+
+    if (!orkData.simulationData) {
+        showToast('No simulation data — ascent path not available', 'warning');
+    }
+    if (!orkData.totalMass) {
+        showToast('Mass not found — use the Descent Rate Calculator', 'warning');
+    }
+}
+
+// Clear .ork import.
+$('ork-clear-btn').addEventListener('click', () => {
+    orkSummary.hidden = true;
+    orkFlightData = null;
+    clearAutoFilled();
+    showToast('Import cleared');
+});
+
+// ============================================================
+// DESCENT RATE CALCULATOR
+// ============================================================
+
+const AIR_DENSITY_SEA_LEVEL = 1.225;
+
+function calcDescentRateFromParams(massKg, diameterM, cd) {
+    const area = Math.PI * Math.pow(diameterM / 2, 2);
+    return Math.sqrt((2 * massKg * 9.81) / (AIR_DENSITY_SEA_LEVEL * cd * area));
+}
+
+// Computes the descent rate and applies it to the appropriate field.
+function computeAndApplyDR(targetField) {
+    let mass = parseFloat($('calc-mass').value);
+    let diameter = parseFloat($('calc-diameter').value);
+    const cd = parseFloat($('calc-cd').value);
+
+    if (isNaN(mass) || isNaN(diameter) || isNaN(cd) || mass <= 0 || diameter <= 0 || cd <= 0) {
+        showToast('Enter valid mass, diameter, and Cd', 'error');
+        return;
+    }
+
+    // Convert imperial inputs to metric for calculation.
+    if (useImperial) {
+        mass /= 2.20462;   // lb to kg
+        diameter *= 0.0254; // inches to meters
+    }
+
+    const descentRate = calcDescentRateFromParams(mass, diameter, cd);
+
+    // Display result.
+    const displayRate = useImperial
+        ? `${(descentRate * FPS_PER_MS).toFixed(1)} ft/s`
+        : `${descentRate.toFixed(1)} m/s`;
+    $('calc-result').textContent = displayRate;
+
+    // Apply to the target field.
+    const rateValue = useImperial ? (descentRate * FPS_PER_MS).toFixed(1) : descentRate.toFixed(1);
+    targetField.value = rateValue;
+    markAutoFilled(targetField);
+
+    showToast(`Descent rate: ${displayRate}`);
+}
+
+// Show/hide the correct apply buttons based on deploy mode.
+function updateCalcButtons() {
+    $('calc-apply-single').hidden = dualDeploy;
+    $('calc-apply-drogue').hidden = !dualDeploy;
+    $('calc-apply-main').hidden = !dualDeploy;
+}
+updateCalcButtons();
+
+$('calc-apply-single').addEventListener('click', () => computeAndApplyDR(dr1Input));
+$('calc-apply-drogue').addEventListener('click', () => computeAndApplyDR(dr1DualInput));
+$('calc-apply-main').addEventListener('click', () => computeAndApplyDR(dr2Input));
+
+// Update calc buttons when deploy mode changes.
+modeSingleBtn.addEventListener('click', updateCalcButtons);
+modeDualBtn.addEventListener('click', updateCalcButtons);
+
+// ============================================================
+// ASCENT PATH VISUALIZATION
+// ============================================================
+
+// Calculates the wind-affected ascent path using OpenRocket simulation
+// data (altitude vs time) combined with live wind profile data.
+function calculateAscentDrift(ascentProfile, windProfile, launchLat, launchLon) {
+    const path = [[launchLat, launchLon]];
+    let dx = 0, dy = 0;
+
+    for (let i = 1; i < ascentProfile.length; i++) {
+        const dt = ascentProfile[i].time - ascentProfile[i - 1].time;
+        if (dt <= 0) continue;
+
+        const midAlt = (ascentProfile[i].altitude + ascentProfile[i - 1].altitude) / 2;
+        const wind = interpolateWind(windProfile, midAlt);
+
+        const dirRad = (wind.direction + 180) * DEG_TO_RAD;
+        dx += wind.speed * Math.sin(dirRad) * dt;
+        dy += wind.speed * Math.cos(dirRad) * dt;
+
+        const dlat = dy / METERS_PER_DEG_LAT;
+        const dlon = dx / (METERS_PER_DEG_LAT * Math.cos(launchLat * DEG_TO_RAD));
+        path.push([launchLat + dlat, launchLon + dlon]);
+    }
+
+    return path;
+}
 
 // ============================================================
 // MAP CAPTURE (for Export)

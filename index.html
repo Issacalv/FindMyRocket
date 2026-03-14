@@ -93,11 +93,66 @@
                 <!-- --- Recovery Configuration Section --- -->
                 <div class="section-title">Recovery Configuration</div>
 
+                <!-- Optional: import an OpenRocket .ork file to auto-fill recovery fields -->
+                <button type="button" id="ork-import-btn" class="btn-secondary">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    Import .ork File
+                </button>
+                <input type="file" id="ork-file-input" accept=".ork" hidden>
+
+                <!-- Rocket summary card: shown after importing an .ork file -->
+                <div id="ork-summary" class="ork-summary" hidden>
+                    <div class="ork-summary-header">
+                        <span class="ork-summary-title" id="ork-rocket-name">—</span>
+                        <button type="button" id="ork-clear-btn" class="ork-clear-btn" title="Clear import">&times;</button>
+                    </div>
+                    <div class="ork-summary-details">
+                        <div class="ork-detail"><span class="ork-detail-label">Motor</span><span id="ork-motor">—</span></div>
+                        <div class="ork-detail"><span class="ork-detail-label">Mass</span><span id="ork-mass">—</span></div>
+                        <div class="ork-detail"><span class="ork-detail-label">Recovery</span><span id="ork-recovery">—</span></div>
+                    </div>
+                </div>
+
                 <!-- Toggle between single deploy (one chute) and dual deploy (drogue + main) -->
                 <div class="deploy-toggle">
                     <button type="button" id="mode-single" class="deploy-btn active">Single Deploy</button>
                     <button type="button" id="mode-dual" class="deploy-btn">Dual Deploy</button>
                 </div>
+
+                <!-- Descent rate calculator: computes rate from rocket mass + parachute specs -->
+                <details id="dr-calculator" class="dr-calc">
+                    <summary class="dr-calc-toggle">
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="10" x2="10" y2="10"/><line x1="12" y1="10" x2="14" y2="10"/><line x1="8" y1="14" x2="10" y2="14"/><line x1="12" y1="14" x2="14" y2="14"/><line x1="8" y1="18" x2="14" y2="18"/></svg>
+                        Descent Rate Calculator
+                    </summary>
+                    <div class="dr-calc-body">
+                        <div class="input-row">
+                            <div class="input-group">
+                                <label for="calc-mass">Rocket Mass <span class="unit" id="calc-mass-unit">lb</span></label>
+                                <input type="number" id="calc-mass" step="any" min="0.01" placeholder="8">
+                            </div>
+                            <div class="input-group">
+                                <label for="calc-diameter">Chute Diameter <span class="unit" id="calc-dia-unit">in</span></label>
+                                <input type="number" id="calc-diameter" step="any" min="0.01" placeholder="48">
+                            </div>
+                        </div>
+                        <div class="input-row">
+                            <div class="input-group">
+                                <label for="calc-cd">Drag Coefficient (Cd)</label>
+                                <input type="number" id="calc-cd" step="any" min="0.01" value="0.75" placeholder="0.75">
+                            </div>
+                            <div class="input-group">
+                                <label>Result <span class="unit unit-speed">ft/s</span></label>
+                                <div class="dr-calc-result" id="calc-result">—</div>
+                            </div>
+                        </div>
+                        <div class="dr-calc-actions">
+                            <button type="button" id="calc-apply-drogue" class="btn-secondary dr-calc-apply" hidden>Apply to Drogue</button>
+                            <button type="button" id="calc-apply-main" class="btn-secondary dr-calc-apply" hidden>Apply to Main</button>
+                            <button type="button" id="calc-apply-single" class="btn-secondary dr-calc-apply">Calculate & Apply</button>
+                        </div>
+                    </div>
+                </details>
 
                 <!-- Single deploy fields: one altitude + one descent rate -->
                 <!-- max="53150" enforces the hard altitude cap (~16,200m at 100 hPa) -->
@@ -266,6 +321,8 @@
 
     <!-- Leaflet JS library (map rendering, tile layers, markers, overlays) -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- JSZip for parsing OpenRocket .ork files (ZIP archives containing XML) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <!-- App logic: all calculation, rendering, and interaction code -->
     <script src="app.js"></script>
 </body>
