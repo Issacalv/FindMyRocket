@@ -2140,3 +2140,86 @@ exportGo.addEventListener('click', async () => {
 function reportRow(label, value) {
     return `<div class="data-item"><div class="data-label">${label}</div><div class="data-value">${value}</div></div>`;
 }
+
+// ============================================================
+// EASTER EGG — click header 5× to launch the rocket icon
+// ============================================================
+(() => {
+    const headerContent = document.querySelector('.header-content');
+    const rocketIcon = document.querySelector('.rocket-icon');
+    if (!headerContent || !rocketIcon) return;
+
+    let clickCount = 0;
+    let resetTimer = null;
+    let animating = false;
+
+    headerContent.addEventListener('click', (e) => {
+        // Ignore clicks on the unit toggle buttons
+        if (e.target.closest('.unit-toggle')) return;
+        if (animating) return;
+
+        clickCount++;
+        clearTimeout(resetTimer);
+        resetTimer = setTimeout(() => { clickCount = 0; }, 2000);
+
+        if (clickCount >= 5) {
+            clickCount = 0;
+            animating = true;
+
+            headerContent.classList.add('easter-active');
+
+            const rect = rocketIcon.getBoundingClientRect();
+            const cx = rect.left + rect.width / 2;
+            const cy = rect.top + rect.height / 2;
+
+            for (let i = 0; i < 3; i++) {
+                setTimeout(() => {
+                    const el = document.createElement('div');
+                    el.className = 'smoke-ring';
+                    el.style.left = (cx - 5) + 'px';
+                    el.style.top = (cy - 5) + 'px';
+                    el.style.animation = 'smokeExpand 0.8s ease-out forwards';
+                    document.body.appendChild(el);
+                    setTimeout(() => el.remove(), 800);
+                }, i * 200);
+            }
+
+            const flameInterval = setInterval(() => {
+                const r = rocketIcon.getBoundingClientRect();
+                const el = document.createElement('div');
+                el.className = 'flame-particle';
+                const colors = ['#ff4c29', '#ff8c42', '#fbbf24', '#ef4444', '#ff6b35'];
+                el.style.background = colors[Math.floor(Math.random() * colors.length)];
+                el.style.left = (r.left + r.width / 2 + (Math.random() - 0.5) * 10) + 'px';
+                el.style.top = (r.top + r.height) + 'px';
+                el.style.animation = `flameFade ${0.4 + Math.random() * 0.4}s ease-out forwards`;
+                document.body.appendChild(el);
+                setTimeout(() => el.remove(), 800);
+            }, 50);
+
+            setTimeout(() => {
+                for (let i = 0; i < 12; i++) {
+                    const el = document.createElement('div');
+                    el.className = 'star-burst';
+                    el.textContent = ['\u2726', '\u2727', '\u26A1', '\uD83D\uDCA5', '\uD83D\uDD25'][Math.floor(Math.random() * 5)];
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = 80 + Math.random() * 120;
+                    el.style.left = cx + 'px';
+                    el.style.top = (cy - 200) + 'px';
+                    el.style.setProperty('--dx', Math.cos(angle) * dist + 'px');
+                    el.style.setProperty('--dy', Math.sin(angle) * dist + 'px');
+                    el.style.animation = `starFly ${0.6 + Math.random() * 0.6}s ease-out forwards`;
+                    document.body.appendChild(el);
+                    setTimeout(() => el.remove(), 1200);
+                }
+            }, 1200);
+
+            setTimeout(() => clearInterval(flameInterval), 2000);
+
+            setTimeout(() => {
+                headerContent.classList.remove('easter-active');
+                animating = false;
+            }, 2600);
+        }
+    });
+})();
