@@ -1171,6 +1171,9 @@ modeDualBtn.addEventListener('click', () => {
 
 // State for imported OpenRocket data (used for ascent visualization).
 let orkFlightData = null;
+// Stored parsed .ork XML doc and motor configs for config switching.
+let orkParsedDoc = null;
+let orkMotorConfigs = [];
 
 // Marks an input as auto-filled (cyan highlight). The highlight clears
 // when the user manually edits the field.
@@ -1196,9 +1199,12 @@ orkFileInput.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     try {
-        const orkData = await parseOrkFile(file);
-        applyOrkData(orkData);
-        showToast(`Imported: ${orkData.rocketName}`);
+        const result = await parseOrkFile(file);
+        orkParsedDoc = result.doc;
+        orkMotorConfigs = result.motorConfigs;
+        applyOrkData(result.orkData);
+        renderMotorConfigSelector();
+        showToast(`Imported: ${result.orkData.rocketName}`);
     } catch (err) {
         console.error('ORK import error:', err);
         showToast(err.message || 'Failed to parse .ork file', 'error');
@@ -1207,6 +1213,7 @@ orkFileInput.addEventListener('change', async (e) => {
 });
 
 // Parses an .ork file (ZIP archive containing rocket.ork XML).
+// Returns { doc, motorConfigs, orkData } so callers can switch configs later.
 async function parseOrkFile(file) {
     const buffer = await file.arrayBuffer();
     let xmlString;
@@ -1229,12 +1236,39 @@ async function parseOrkFile(file) {
     if (doc.querySelector('parsererror')) throw new Error('Invalid .ork file format');
     if (doc.documentElement.tagName !== 'openrocket') throw new Error('Not a valid OpenRocket file');
 
-    return extractOrkData(doc);
+    const motorConfigs = extractAllMotorConfigs(doc);
+    const orkData = extractOrkData(doc);
+    return { doc, motorConfigs, orkData };
+}
+
+// Extracts all motor configurations from the OpenRocket XML DOM.
+// Returns an array of { configId, designation, manufacturer, label, isDefault }.
+function extractAllMotorConfigs(doc) {
+    const configs = [];
+    const motorConfigEls = doc.querySelectorAll('motorconfiguration');
+    for (const mc of motorConfigEls) {
+        const configId = mc.getAttribute('configid');
+        if (!configId) continue;
+        const isDefault = mc.getAttribute('default') === 'true';
+
+        // Find the matching motor element for this config.
+        const motor = doc.querySelector(`motor[configid="${configId}"]`);
+        let designation = '';
+        let manufacturer = '';
+        if (motor) {
+            designation = motor.querySelector('designation')?.textContent?.trim() || '';
+            manufacturer = motor.querySelector('manufacturer')?.textContent?.trim() || '';
+        }
+        const label = manufacturer ? `${manufacturer} ${designation}` : designation || configId;
+        configs.push({ configId, designation, manufacturer, label, isDefault });
+    }
+    return configs;
 }
 
 // Walks the OpenRocket XML DOM and extracts rocket info, recovery
 // devices, motor designation, mass, and simulation data.
-function extractOrkData(doc) {
+// If selectedConfigId is provided, uses that motor config instead of the default.
+function extractOrkData(doc, selectedConfigId) {
     const result = {
         rocketName: '',
         motorDesignation: '',
@@ -1250,9 +1284,10 @@ function extractOrkData(doc) {
     const rocketNameEl = doc.querySelector('rocket > name');
     result.rocketName = rocketNameEl ? rocketNameEl.textContent.trim() : file.name.replace('.ork', '');
 
-    // Motor designation: find the default motor config, then match its motor.
-    const defaultConfig = doc.querySelector('motorconfiguration[default="true"]');
-    const configId = defaultConfig ? defaultConfig.getAttribute('configid') : null;
+    // Motor designation: use selected config or fall back to default.
+    const configId = selectedConfigId
+        || doc.querySelector('motorconfiguration[default="true"]')?.getAttribute('configid')
+        || null;
     if (configId) {
         const motor = doc.querySelector(`motor[configid="${configId}"]`);
         if (motor) {
@@ -1288,11 +1323,22 @@ function extractOrkData(doc) {
         result.isDualDeploy = true;
     }
 
-    // Simulation data: find the first uptodate sim, or fall back to first sim.
+    // Simulation data: find the simulation matching the selected config,
+    // then fall back to uptodate, then first sim.
     const sims = doc.querySelectorAll('simulation');
     let bestSim = null;
-    for (const sim of sims) {
-        if (sim.getAttribute('status') === 'uptodate') { bestSim = sim; break; }
+    if (configId) {
+        for (const sim of sims) {
+            const simConfigEl = sim.querySelector('configid');
+            if (simConfigEl && simConfigEl.textContent.trim() === configId) {
+                bestSim = sim; break;
+            }
+        }
+    }
+    if (!bestSim) {
+        for (const sim of sims) {
+            if (sim.getAttribute('status') === 'uptodate') { bestSim = sim; break; }
+        }
     }
     if (!bestSim && sims.length > 0) bestSim = sims[0];
 
@@ -1497,11 +1543,42 @@ function applyOrkData(orkData) {
 $('ork-clear-btn').addEventListener('click', () => {
     orkSummary.hidden = true;
     orkFlightData = null;
+    orkParsedDoc = null;
+    orkMotorConfigs = [];
     clearAutoFilled();
     const ascentHint = $('ascent-rate-hint');
     ascentHint.textContent = 'Average vertical speed to apogee. Import a .ork file for accurate per-step timing.';
     ascentHint.classList.remove('ork-active');
     showToast('Import cleared');
+});
+
+// Renders the motor config dropdown if the .ork has multiple configs.
+function renderMotorConfigSelector() {
+    const row = $('ork-motor-config-row');
+    const select = $('ork-motor-select');
+    if (orkMotorConfigs.length <= 1) {
+        row.hidden = true;
+        return;
+    }
+    select.innerHTML = '';
+    for (const cfg of orkMotorConfigs) {
+        const opt = document.createElement('option');
+        opt.value = cfg.configId;
+        opt.textContent = cfg.label;
+        if (cfg.isDefault) opt.selected = true;
+        select.appendChild(opt);
+    }
+    row.hidden = false;
+}
+
+// Switch motor config when the user selects a different one.
+$('ork-motor-select').addEventListener('change', (e) => {
+    if (!orkParsedDoc) return;
+    const selectedConfigId = e.target.value;
+    clearAutoFilled();
+    const orkData = extractOrkData(orkParsedDoc, selectedConfigId);
+    applyOrkData(orkData);
+    showToast(`Switched to ${orkData.motorDesignation}`);
 });
 
 // ============================================================

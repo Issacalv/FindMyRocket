@@ -1005,6 +1005,33 @@ select:focus {
     color: var(--text-primary);
 }
 
+.ork-motor-config-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.35rem;
+}
+
+.ork-motor-select {
+    flex: 1;
+    background: var(--bg-card);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.3rem 0.5rem;
+    font-size: 0.75rem;
+    font-family: 'Consolas', 'SF Mono', monospace;
+    cursor: pointer;
+    transition: border-color 0.2s;
+}
+
+.ork-motor-select:hover,
+.ork-motor-select:focus {
+    border-color: var(--accent2);
+    outline: none;
+}
+
 /* ===== Descent Rate Calculator ===== */
 .dr-calc {
     margin-bottom: 0.75rem;
