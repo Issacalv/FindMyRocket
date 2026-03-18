@@ -13,6 +13,36 @@ import {
     bearingToCompass, calcDescentRateFromParams
 } from './calc.js';
 
+// Hard limits for all numeric input fields. These are enforced both via
+// HTML max/min attributes and programmatically when loading .fmr files,
+// so hand-edited session files cannot inject out-of-range values.
+const INPUT_LIMITS = {
+    latitude:      { min: -90,   max: 90 },
+    longitude:     { min: -180,  max: 180 },
+    launchAngle:   { min: 0,     max: 15 },
+    launchAzimuth: { min: 0,     max: 360 },
+    ascentRate:    { min: 0,     max: 1500 },   // ft/s or m/s — well above any HPR
+    apogee:        { min: 1,     max: 53150 },  // hard ceiling from API pressure levels
+    apogeeDual:    { min: 1,     max: 53150 },
+    transition:    { min: 0,     max: 53150 },
+    dr1:           { min: 0.1,   max: 500 },    // well above ballistic terminal velocity
+    dr1Dual:       { min: 0.1,   max: 500 },
+    dr2:           { min: 0.1,   max: 500 },
+    calcMass:      { min: 0.01,  max: 10000 },  // covers lb, kg, oz, g sub-units
+    calcDiameter:  { min: 0.01,  max: 10000 },  // covers in, m, cm sub-units
+    calcCd:        { min: 0.01,  max: 3 },      // no real Cd exceeds ~2.2
+};
+
+// Clamp a numeric value to the defined limits for a given field.
+// Returns the clamped value, or '' if the input is not a valid number.
+function clampInput(fieldKey, rawValue) {
+    const v = parseFloat(rawValue);
+    if (isNaN(v) || rawValue === '' || rawValue == null) return '';
+    const lim = INPUT_LIMITS[fieldKey];
+    if (!lim) return v;
+    return Math.min(Math.max(v, lim.min), lim.max);
+}
+
 // Current unit system flag. When true, all displayed values and user
 // inputs are in imperial (ft, ft/s, mph). Internal calculations always
 // use metric (m, m/s).
@@ -61,6 +91,30 @@ const ascentRateInput = $('ascent-rate');
 const loadingOverlay = $('loading-overlay');
 const formError = $('form-error');
 const resultsPanel = $('results-panel');
+
+// Map DOM input ids to their INPUT_LIMITS keys and enforce limits on blur.
+// HTML min/max attributes only flag the field as :invalid — they do NOT
+// prevent the user from typing or pasting out-of-range values. This
+// listener hard-caps values when the user leaves the field.
+const INPUT_ID_TO_KEY = {
+    'latitude': 'latitude', 'longitude': 'longitude',
+    'launch-angle': 'launchAngle', 'launch-azimuth': 'launchAzimuth',
+    'ascent-rate': 'ascentRate',
+    'apogee': 'apogee', 'apogee-dual': 'apogeeDual', 'transition': 'transition',
+    'dr1': 'dr1', 'dr1-dual': 'dr1Dual', 'dr2': 'dr2',
+    'calc-mass': 'calcMass', 'calc-diameter': 'calcDiameter', 'calc-cd': 'calcCd',
+};
+for (const [domId, limKey] of Object.entries(INPUT_ID_TO_KEY)) {
+    const el = $(domId);
+    if (!el) continue;
+    el.addEventListener('blur', () => {
+        if (el.value === '') return;
+        const clamped = clampInput(limKey, el.value);
+        if (clamped !== '' && parseFloat(el.value) !== clamped) {
+            el.value = clamped;
+        }
+    });
+}
 
 // Updates both the lat/lon input fields and the draggable map pin.
 // Called from search results, GPS, manual input, and pin drag events.
@@ -2321,27 +2375,27 @@ function restoreSessionState(data) {
     if (savedDual && !dualDeploy) modeDualBtn.click();
     else if (!savedDual && dualDeploy) modeSingleBtn.click();
 
-    // 4. Form input values.
+    // 4. Form input values (clamped to hard limits to guard against hand-edited .fmr files).
     const fi = data.formInputs || {};
-    latInput.value = fi.latitude ?? '';
-    lonInput.value = fi.longitude ?? '';
+    latInput.value = clampInput('latitude', fi.latitude);
+    lonInput.value = clampInput('longitude', fi.longitude);
     $('location-search').value = fi.locationSearch ?? '';
     launchDateInput.value = fi.launchDate ?? '';
     launchHourSelect.value = fi.launchHour ?? '';
     launchMinSelect.value = fi.launchMin ?? '';
     launchAmpmSelect.value = fi.launchAmpm ?? 'AM';
-    apogeeInput.value = fi.apogee ?? '';
-    dr1Input.value = fi.dr1 ?? '';
-    $('apogee-dual').value = fi.apogeeDual ?? '';
-    $('dr1-dual').value = fi.dr1Dual ?? '';
-    transitionInput.value = fi.transition ?? '';
-    dr2Input.value = fi.dr2 ?? '';
-    launchAngleInput.value = fi.launchAngle ?? '';
-    launchAzimuthInput.value = fi.launchAzimuth ?? '';
-    ascentRateInput.value = fi.ascentRate ?? '';
-    $('calc-mass').value = fi.calcMass ?? '';
-    $('calc-diameter').value = fi.calcDiameter ?? '';
-    $('calc-cd').value = fi.calcCd ?? '';
+    apogeeInput.value = clampInput('apogee', fi.apogee);
+    dr1Input.value = clampInput('dr1', fi.dr1);
+    $('apogee-dual').value = clampInput('apogeeDual', fi.apogeeDual);
+    $('dr1-dual').value = clampInput('dr1Dual', fi.dr1Dual);
+    transitionInput.value = clampInput('transition', fi.transition);
+    dr2Input.value = clampInput('dr2', fi.dr2);
+    launchAngleInput.value = clampInput('launchAngle', fi.launchAngle);
+    launchAzimuthInput.value = clampInput('launchAzimuth', fi.launchAzimuth);
+    ascentRateInput.value = clampInput('ascentRate', fi.ascentRate);
+    $('calc-mass').value = clampInput('calcMass', fi.calcMass);
+    $('calc-diameter').value = clampInput('calcDiameter', fi.calcDiameter);
+    $('calc-cd').value = clampInput('calcCd', fi.calcCd);
 
     // 5. ORK extracted data (restore display without raw XML).
     if (data.orkExtracted && data.orkExtracted.summaryVisible) {
