@@ -172,6 +172,7 @@ label {
 /* Clickable unit labels that toggle between sub-units (e.g., kg↔g, lb↔oz) */
 .unit-toggleable {
     cursor: pointer;
+    color: var(--accent2);
     border-bottom: 1px dashed var(--accent2);
     transition: color 0.15s;
 }
@@ -219,11 +220,19 @@ input[type="number"]:invalid {
     gap: 0.25rem;
 }
 
-/* The ":" separator between hour and minute selects */
+/* The ":" separator between hour and minute inputs */
 .time-colon {
     color: var(--text-secondary);
     font-size: 1rem;
     font-weight: 600;
+}
+
+/* AM/PM dropdown (shown only in 12h mode) */
+.time-ampm {
+    width: auto;
+    flex: unset;
+    padding: 0.5rem 0.3rem;
+    margin-left: 0.25rem;
 }
 
 /* Dropdown select elements (hour, minute) */

@@ -75,12 +75,15 @@
                         <input type="date" id="launch-date" required>
                     </div>
                     <div class="input-group">
-                        <label>Time (local)</label>
-                        <!-- Hour and minute dropdowns (populated by JS, 15-min intervals) -->
+                        <label>Time (<span id="time-format-label" class="unit-toggleable" title="Click to toggle 12h/24h">24h</span>)</label>
                         <div class="time-select-row">
                             <select id="launch-hour"></select>
                             <span class="time-colon">:</span>
                             <select id="launch-min"></select>
+                            <select id="launch-ampm" class="time-ampm" style="display:none;">
+                                <option value="AM">AM</option>
+                                <option value="PM">PM</option>
+                            </select>
                         </div>
                     </div>
                 </div>

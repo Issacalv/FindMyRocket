@@ -53,6 +53,8 @@ const dr2Input = $('dr2');
 const launchDateInput = $('launch-date');
 const launchHourSelect = $('launch-hour');
 const launchMinSelect = $('launch-min');
+const launchAmpmSelect = $('launch-ampm');
+let use24h = true; // 24-hour time format by default
 const launchAngleInput = $('launch-angle');
 const launchAzimuthInput = $('launch-azimuth');
 const ascentRateInput = $('ascent-rate');
@@ -69,13 +71,35 @@ function setCoords(lat, lon) {
 }
 
 // --- Populate hour/minute dropdowns ---
-// Hours: 00-23, minutes: 00/15/30/45 (15-minute intervals)
-for (let h = 0; h < 24; h++) {
-    const opt = document.createElement('option');
-    opt.value = h;
-    opt.textContent = String(h).padStart(2, '0');
-    launchHourSelect.appendChild(opt);
+const timeFormatLabel = $('time-format-label');
+
+function populateHourSelect() {
+    const currentVal = parseInt(launchHourSelect.value, 10);
+    launchHourSelect.innerHTML = '';
+    if (use24h) {
+        for (let h = 0; h < 24; h++) {
+            const opt = document.createElement('option');
+            opt.value = h;
+            opt.textContent = String(h).padStart(2, '0');
+            launchHourSelect.appendChild(opt);
+        }
+        launchAmpmSelect.style.display = 'none';
+    } else {
+        for (let h = 1; h <= 12; h++) {
+            const opt = document.createElement('option');
+            opt.value = h;
+            opt.textContent = String(h);
+            launchHourSelect.appendChild(opt);
+        }
+        launchAmpmSelect.style.display = '';
+    }
+    // Restore selection if valid
+    if (!isNaN(currentVal)) launchHourSelect.value = currentVal;
 }
+
+populateHourSelect();
+
+// Minutes: 15-minute intervals (00/15/30/45)
 for (let m = 0; m < 60; m += 15) {
     const opt = document.createElement('option');
     opt.value = m;
@@ -83,19 +107,55 @@ for (let m = 0; m < 60; m += 15) {
     launchMinSelect.appendChild(opt);
 }
 
-// Sets the date and time inputs to the current local date/time,
-// snapping minutes to the nearest 15-minute interval.
+// Sets the date and time inputs to the current local date/time.
 function setDateTimeToNow() {
     const now = new Date();
     const yyyy = now.getFullYear();
-    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const mo = String(now.getMonth() + 1).padStart(2, '0');
     const dd = String(now.getDate()).padStart(2, '0');
-    launchDateInput.value = `${yyyy}-${mm}-${dd}`;
-    launchHourSelect.value = now.getHours();
-    const nearest15 = Math.round(now.getMinutes() / 15) * 15;
-    launchMinSelect.value = nearest15 >= 60 ? 45 : nearest15;
+    launchDateInput.value = `${yyyy}-${mo}-${dd}`;
+    let h = now.getHours();
+    if (!use24h) {
+        launchAmpmSelect.value = h >= 12 ? 'PM' : 'AM';
+        h = h % 12 || 12;
+    }
+    launchHourSelect.value = h;
+    launchMinSelect.value = now.getMinutes();
 }
 setDateTimeToNow();
+
+// --- 12h / 24h Toggle (clickable label) ---
+timeFormatLabel.addEventListener('click', () => {
+    const oldH = parseInt(launchHourSelect.value, 10);
+    const hadValue = !isNaN(oldH);
+
+    if (use24h) {
+        // Switch to 12h
+        use24h = false;
+        timeFormatLabel.textContent = '12h';
+        let h12 = oldH, ampm = 'AM';
+        if (hadValue) {
+            ampm = oldH >= 12 ? 'PM' : 'AM';
+            h12 = oldH % 12 || 12;
+        }
+        populateHourSelect();
+        if (hadValue) {
+            launchHourSelect.value = h12;
+            launchAmpmSelect.value = ampm;
+        }
+    } else {
+        // Switch to 24h
+        use24h = true;
+        timeFormatLabel.textContent = '24h';
+        let h24 = oldH;
+        if (hadValue) {
+            const isPM = launchAmpmSelect.value === 'PM';
+            h24 = (oldH % 12) + (isPM ? 12 : 0);
+        }
+        populateHourSelect();
+        if (hadValue) launchHourSelect.value = h24;
+    }
+});
 
 // ============================================================
 // MAP INITIALIZATION
@@ -1056,8 +1116,16 @@ form.addEventListener('submit', async (e) => {
     // Parse launch date and time from the form inputs.
     const launchDateVal = launchDateInput.value;
     if (!launchDateVal) return showError('Please set a launch date');
-    const hh = String(launchHourSelect.value).padStart(2, '0');
-    const mm = String(launchMinSelect.value).padStart(2, '0');
+    let hourVal = parseInt(launchHourSelect.value, 10);
+    const minVal = parseInt(launchMinSelect.value, 10);
+    // Convert 12h to 24h if needed
+    if (!use24h) {
+        const isPM = launchAmpmSelect.value === 'PM';
+        if (hourVal === 12) hourVal = isPM ? 12 : 0;
+        else if (isPM) hourVal += 12;
+    }
+    const hh = String(hourVal).padStart(2, '0');
+    const mm = String(minVal).padStart(2, '0');
     const launchTime = new Date(`${launchDateVal}T${hh}:${mm}`);
     if (isNaN(launchTime.getTime())) return showError('Invalid date or time');
 
