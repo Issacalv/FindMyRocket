@@ -18,6 +18,12 @@ import {
 // use metric (m, m/s).
 let useImperial = true;
 
+// Sub-unit state for toggleable unit labels.
+// When true, mass displays in smaller units (g or oz instead of kg or lb).
+let massSmallUnit = false;
+// When true, diameter displays in smaller units (cm instead of m) — metric only.
+let diaSmallUnit = false;
+
 // --- DOM refs ---
 // Shorthand for getElementById used throughout the file.
 const $ = (id) => document.getElementById(id);
@@ -282,13 +288,25 @@ function updateUnitLabels() {
     // Ascent rate placeholder
     ascentRateInput.placeholder = useImperial ? '150' : '45';
 
-    // Descent rate calculator units
+    // Descent rate calculator units (respect sub-unit toggle state)
     const calcMassUnit = $('calc-mass-unit');
     if (calcMassUnit) {
-        calcMassUnit.textContent = useImperial ? 'lb' : 'kg';
-        $('calc-dia-unit').textContent = useImperial ? 'in' : 'm';
-        $('calc-mass').placeholder = useImperial ? '8' : '3.5';
-        $('calc-diameter').placeholder = useImperial ? '48' : '1.2';
+        if (useImperial) {
+            calcMassUnit.textContent = massSmallUnit ? 'oz' : 'lb';
+            $('calc-mass').placeholder = massSmallUnit ? '128' : '8';
+        } else {
+            calcMassUnit.textContent = massSmallUnit ? 'g' : 'kg';
+            $('calc-mass').placeholder = massSmallUnit ? '3500' : '3.5';
+        }
+        // Diameter sub-unit only applies in metric; reset to base in imperial
+        if (useImperial) {
+            diaSmallUnit = false;
+            $('calc-dia-unit').textContent = 'in';
+            $('calc-diameter').placeholder = '48';
+        } else {
+            $('calc-dia-unit').textContent = diaSmallUnit ? 'cm' : 'm';
+            $('calc-diameter').placeholder = diaSmallUnit ? '120' : '1.2';
+        }
     }
 }
 
@@ -297,7 +315,23 @@ function updateUnitLabels() {
 // speed fields use FPS_PER_MS.
 function convertInputValues(toImperial) {
     const LB_PER_KG = 2.20462;
+    const OZ_PER_G = 0.035274;  // 1g = 0.035274 oz
     const IN_PER_M = 39.3701;
+    const IN_PER_CM = 0.393701;
+
+    // Mass conversion factor depends on sub-unit state:
+    // kg→lb, g→oz, or the cross conversions when sub-unit is active
+    let massFactor;
+    if (massSmallUnit) {
+        // g↔oz: 1 g = 0.035274 oz, so oz_per_g
+        massFactor = OZ_PER_G;
+    } else {
+        massFactor = LB_PER_KG;
+    }
+
+    // Diameter: if diaSmallUnit is active (cm), convert cm→in instead of m→in
+    const diaFactor = diaSmallUnit ? IN_PER_CM : IN_PER_M;
+
     const fields = [
         { input: apogeeInput, factor: FT_PER_M },
         { input: dr1Input, factor: FPS_PER_MS },
@@ -305,8 +339,8 @@ function convertInputValues(toImperial) {
         { input: $('dr1-dual'), factor: FPS_PER_MS },
         { input: transitionInput, factor: FT_PER_M },
         { input: dr2Input, factor: FPS_PER_MS },
-        { input: $('calc-mass'), factor: LB_PER_KG },
-        { input: $('calc-diameter'), factor: IN_PER_M },
+        { input: $('calc-mass'), factor: massFactor },
+        { input: $('calc-diameter'), factor: diaFactor },
         { input: ascentRateInput, factor: FPS_PER_MS }
     ];
     for (const { input, factor } of fields) {
@@ -327,6 +361,7 @@ metricBtn.addEventListener('click', () => {
     metricBtn.classList.add('active');
     imperialBtn.classList.remove('active');
     updateUnitLabels();
+    updateDiaToggleable();
     if (lastDispersion) renderResults(lastDispersion, lastLaunchLat, lastLaunchLon);
 });
 
@@ -338,11 +373,65 @@ imperialBtn.addEventListener('click', () => {
     imperialBtn.classList.add('active');
     metricBtn.classList.remove('active');
     updateUnitLabels();
+    updateDiaToggleable();
     if (lastDispersion) renderResults(lastDispersion, lastLaunchLat, lastLaunchLon);
 });
 
 // Set initial labels for the default unit system (imperial).
 updateUnitLabels();
+
+// --- Clickable sub-unit toggles ---
+// Mass unit: click to toggle kg↔g (metric) or lb↔oz (imperial).
+const calcMassUnitEl = $('calc-mass-unit');
+calcMassUnitEl.classList.add('unit-toggleable');
+calcMassUnitEl.title = 'Click to toggle unit';
+calcMassUnitEl.addEventListener('click', () => {
+    const input = $('calc-mass');
+    const val = parseFloat(input.value);
+    massSmallUnit = !massSmallUnit;
+    if (!isNaN(val) && input.value !== '') {
+        // kg↔g: ×1000, lb↔oz: ×16
+        const factor = useImperial ? 16 : 1000;
+        input.value = massSmallUnit
+            ? +(val * factor).toPrecision(6)
+            : +(val / factor).toPrecision(6);
+    }
+    if (useImperial) {
+        calcMassUnitEl.textContent = massSmallUnit ? 'oz' : 'lb';
+        input.placeholder = massSmallUnit ? '128' : '8';
+    } else {
+        calcMassUnitEl.textContent = massSmallUnit ? 'g' : 'kg';
+        input.placeholder = massSmallUnit ? '3500' : '3.5';
+    }
+});
+
+// Diameter unit: click to toggle m↔cm (metric only; inches have no natural toggle).
+const calcDiaUnitEl = $('calc-dia-unit');
+calcDiaUnitEl.addEventListener('click', () => {
+    if (useImperial) return; // no toggle for inches
+    const input = $('calc-diameter');
+    const val = parseFloat(input.value);
+    diaSmallUnit = !diaSmallUnit;
+    if (!isNaN(val) && input.value !== '') {
+        input.value = diaSmallUnit
+            ? +(val * 100).toPrecision(6)
+            : +(val / 100).toPrecision(6);
+    }
+    calcDiaUnitEl.textContent = diaSmallUnit ? 'cm' : 'm';
+    input.placeholder = diaSmallUnit ? '120' : '1.2';
+});
+
+// Show toggleable styling on diameter only when metric
+function updateDiaToggleable() {
+    if (useImperial) {
+        calcDiaUnitEl.classList.remove('unit-toggleable');
+        calcDiaUnitEl.title = '';
+    } else {
+        calcDiaUnitEl.classList.add('unit-toggleable');
+        calcDiaUnitEl.title = 'Click to toggle unit';
+    }
+}
+updateDiaToggleable();
 
 // --- Hard altitude clamp on input ---
 // Prevents the user from typing or pasting a value above the maximum
@@ -1097,10 +1186,13 @@ function computeAndApplyDR(targetField) {
         return;
     }
 
-    // Convert imperial inputs to metric for calculation.
+    // Convert inputs to metric (kg, m) for calculation.
     if (useImperial) {
-        mass /= 2.20462;   // lb to kg
+        mass = massSmallUnit ? mass / 35.274 : mass / 2.20462; // oz→kg or lb→kg
         diameter *= 0.0254; // inches to meters
+    } else {
+        if (massSmallUnit) mass /= 1000; // g→kg
+        if (diaSmallUnit) diameter /= 100; // cm→m
     }
 
     const descentRate = calcDescentRateFromParams(mass, diameter, cd);

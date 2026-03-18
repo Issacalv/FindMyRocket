@@ -169,6 +169,17 @@ label {
     font-size: 0.65rem;
 }
 
+/* Clickable unit labels that toggle between sub-units (e.g., kg↔g, lb↔oz) */
+.unit-toggleable {
+    cursor: pointer;
+    border-bottom: 1px dashed var(--accent2);
+    transition: color 0.15s;
+}
+.unit-toggleable:hover {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+}
+
 /* ===== Form Inputs ===== */
 /* Styled dark inputs with monospace font for numeric values */
 input[type="number"],
