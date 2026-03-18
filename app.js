@@ -1317,7 +1317,8 @@ function extractOrkData(doc, selectedConfigId) {
     }
 
     // Detect dual deploy: need at least one apogee chute and one altitude chute.
-    const apogeeChutes = result.parachutes.filter(p => p.deployEvent === 'apogee');
+    // Treat "ejection" the same as "apogee" (motor ejection charge at apogee).
+    const apogeeChutes = result.parachutes.filter(p => p.deployEvent === 'apogee' || p.deployEvent === 'ejection');
     const altitudeChutes = result.parachutes.filter(p => p.deployEvent === 'altitude');
     if (apogeeChutes.length > 0 && altitudeChutes.length > 0) {
         result.isDualDeploy = true;
@@ -1393,6 +1394,25 @@ function extractOrkData(doc, selectedConfigId) {
                 }
                 if (result.simulationData) result.simulationData.events = events;
             }
+
+            // Fallback: if no detailed datapoints, derive average ascent rate
+            // from flightdata summary attributes (maxaltitude & timetoapogee).
+            if (!result.simulationData) {
+                const summaryAlt = parseFloat(fd.getAttribute('maxaltitude'));
+                const summaryTime = parseFloat(fd.getAttribute('timetoapogee'));
+                if (!isNaN(summaryAlt) && !isNaN(summaryTime) && summaryTime > 0 && summaryAlt > 0) {
+                    result.summaryAscentRate = summaryAlt / summaryTime; // m/s
+                }
+            }
+
+            // Fallback: if no mass from datapoints, use groundhitvelocity as
+            // the descent rate directly (avoids needing mass for chute calc).
+            if (!result.totalMass) {
+                const groundHitVel = parseFloat(fd.getAttribute('groundhitvelocity'));
+                if (!isNaN(groundHitVel) && groundHitVel > 0) {
+                    result.summaryDescentRate = groundHitVel; // m/s
+                }
+            }
         }
     }
 
@@ -1430,7 +1450,7 @@ function applyOrkData(orkData) {
         // Switch to dual deploy mode.
         if (!dualDeploy) modeDualBtn.click();
 
-        const drogue = orkData.parachutes.find(p => p.deployEvent === 'apogee');
+        const drogue = orkData.parachutes.find(p => p.deployEvent === 'apogee' || p.deployEvent === 'ejection');
         const mainChutes = orkData.parachutes.filter(p => p.deployEvent === 'altitude');
         const main = mainChutes.length > 0
             ? mainChutes.reduce((a, b) => a.diameter > b.diameter ? a : b)
@@ -1472,10 +1492,23 @@ function applyOrkData(orkData) {
                 : orkData.deploymentAltitude.toFixed(0);
             markAutoFilled(apogeeInput);
         }
+        const dr1Hint = $('dr1-hint');
         if (chute && orkData.totalMass) {
             const dr = calcDescentRate(orkData.totalMass, chute.diameter, chute.cd);
             dr1Input.value = useImperial ? (dr * FPS_PER_MS).toFixed(1) : dr.toFixed(1);
             markAutoFilled(dr1Input);
+            dr1Hint.textContent = 'Calculated from .ork chute diameter, Cd, and mass.';
+            dr1Hint.classList.add('ork-active');
+        } else if (orkData.summaryDescentRate) {
+            const dr = orkData.summaryDescentRate;
+            dr1Input.value = useImperial ? (dr * FPS_PER_MS).toFixed(1) : dr.toFixed(1);
+            markAutoFilled(dr1Input);
+            dr1Hint.textContent = 'Estimated from .ork ground hit velocity. Run simulation in OpenRocket for higher accuracy.';
+            dr1Hint.classList.add('ork-active');
+            showToast('Descent rate estimated from .ork flight summary (ground hit velocity). Run simulation in OpenRocket for higher accuracy.', 'warning');
+        } else {
+            dr1Hint.textContent = '';
+            dr1Hint.classList.remove('ork-active');
         }
 
         $('ork-recovery').textContent = 'Single Deploy';
@@ -1524,6 +1557,16 @@ function applyOrkData(orkData) {
         }
         ascentHint.textContent = 'Using .ork simulation profile — variable thrust and coast phases included.';
         ascentHint.classList.add('ork-active');
+    } else if (orkData.summaryAscentRate) {
+        // Fallback: use average ascent rate derived from flightdata summary.
+        const avgRate = orkData.summaryAscentRate; // m/s
+        ascentRateInput.value = useImperial
+            ? (avgRate * FPS_PER_MS).toFixed(1)
+            : avgRate.toFixed(1);
+        markAutoFilled(ascentRateInput);
+        ascentHint.textContent = 'Estimated from .ork summary (no detailed sim data). Run simulation in OpenRocket for higher accuracy.';
+        ascentHint.classList.add('ork-active');
+        showToast('Simulation not run in OpenRocket — using estimated average ascent rate from flight summary.', 'warning');
     } else {
         ascentHint.textContent = 'Average vertical speed to apogee. Import a .ork file for accurate per-step timing.';
         ascentHint.classList.remove('ork-active');
@@ -1531,7 +1574,7 @@ function applyOrkData(orkData) {
 
     orkSummary.hidden = false;
 
-    if (!orkData.simulationData) {
+    if (!orkData.simulationData && !orkData.summaryAscentRate) {
         showToast('No simulation data — ascent path not available', 'warning');
     }
     if (!orkData.totalMass) {
@@ -1585,15 +1628,16 @@ $('ork-motor-select').addEventListener('change', (e) => {
 // DESCENT RATE CALCULATOR
 // ============================================================
 
-// Computes the descent rate and applies it to the appropriate field.
-function computeAndApplyDR(targetField) {
+// Computes the descent rate and optionally applies it to a target field.
+// Returns the computed rate string (or null if inputs are invalid).
+function computeDR() {
     let mass = parseFloat($('calc-mass').value);
     let diameter = parseFloat($('calc-diameter').value);
     const cd = parseFloat($('calc-cd').value);
 
     if (isNaN(mass) || isNaN(diameter) || isNaN(cd) || mass <= 0 || diameter <= 0 || cd <= 0) {
-        showToast('Enter valid mass, diameter, and Cd', 'error');
-        return;
+        $('calc-result').textContent = '—';
+        return null;
     }
 
     // Convert inputs to metric (kg, m) for calculation.
@@ -1613,28 +1657,49 @@ function computeAndApplyDR(targetField) {
         : `${descentRate.toFixed(1)} m/s`;
     $('calc-result').textContent = displayRate;
 
-    // Apply to the target field.
-    const rateValue = useImperial ? (descentRate * FPS_PER_MS).toFixed(1) : descentRate.toFixed(1);
-    targetField.value = rateValue;
-    markAutoFilled(targetField);
-
-    showToast(`Descent rate: ${displayRate}`);
+    return useImperial ? (descentRate * FPS_PER_MS).toFixed(1) : descentRate.toFixed(1);
 }
 
+// Apply a computed rate to a specific target field.
+function applyDR(targetField) {
+    const rateValue = computeDR();
+    if (rateValue == null) {
+        showToast('Enter valid mass, diameter, and Cd', 'error');
+        return;
+    }
+    targetField.value = rateValue;
+    markAutoFilled(targetField);
+}
+
+// Live-update: recalculate on every input change, auto-apply in single deploy mode.
+function onCalcInput() {
+    const rateValue = computeDR();
+    if (rateValue != null && !dualDeploy) {
+        dr1Input.value = rateValue;
+        markAutoFilled(dr1Input);
+    }
+}
+
+$('calc-mass').addEventListener('input', onCalcInput);
+$('calc-diameter').addEventListener('input', onCalcInput);
+$('calc-cd').addEventListener('input', onCalcInput);
+
 // Show/hide the correct apply buttons based on deploy mode.
+// In single mode, hide all buttons (auto-apply handles it).
+// In dual mode, show drogue & main buttons so user picks which to apply.
 function updateCalcButtons() {
-    $('calc-apply-single').hidden = dualDeploy;
+    $('calc-apply-single').hidden = true;
     $('calc-apply-drogue').hidden = !dualDeploy;
     $('calc-apply-main').hidden = !dualDeploy;
 }
 updateCalcButtons();
 
-$('calc-apply-single').addEventListener('click', () => computeAndApplyDR(dr1Input));
-$('calc-apply-drogue').addEventListener('click', () => computeAndApplyDR(dr1DualInput));
-$('calc-apply-main').addEventListener('click', () => computeAndApplyDR(dr2Input));
+$('calc-apply-single').addEventListener('click', () => applyDR(dr1Input));
+$('calc-apply-drogue').addEventListener('click', () => applyDR(dr1DualInput));
+$('calc-apply-main').addEventListener('click', () => applyDR(dr2Input));
 
-// Update calc buttons when deploy mode changes.
-modeSingleBtn.addEventListener('click', updateCalcButtons);
+// Update calc buttons when deploy mode changes; re-run live calc.
+modeSingleBtn.addEventListener('click', () => { updateCalcButtons(); onCalcInput(); });
 modeDualBtn.addEventListener('click', updateCalcButtons);
 
 // ============================================================

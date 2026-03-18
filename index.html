@@ -191,7 +191,7 @@
                         <div class="dr-calc-actions">
                             <button type="button" id="calc-apply-drogue" class="btn-secondary dr-calc-apply" hidden>Apply to Drogue</button>
                             <button type="button" id="calc-apply-main" class="btn-secondary dr-calc-apply" hidden>Apply to Main</button>
-                            <button type="button" id="calc-apply-single" class="btn-secondary dr-calc-apply">Calculate & Apply</button>
+                            <button type="button" id="calc-apply-single" class="btn-secondary dr-calc-apply" hidden>Calculate & Apply</button>
                         </div>
                     </div>
                 </details>
@@ -207,6 +207,7 @@
                         <div class="input-group">
                             <label for="dr1">Descent Rate <span class="unit unit-speed">m/s</span></label>
                             <input type="number" id="dr1" step="any" min="0.1" placeholder="5" required>
+                            <div class="ascent-rate-hint" id="dr1-hint"></div>
                         </div>
                     </div>
                 </div>
