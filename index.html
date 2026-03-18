@@ -23,6 +23,26 @@
             </svg>
             <h1>FindMyRocket</h1>
             <span class="subtitle">Landing Dispersion Calculator</span>
+            <!-- Session save/load buttons -->
+            <div class="session-btns">
+                <button type="button" id="save-session-btn" class="session-btn" title="Save Session">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    Save
+                </button>
+                <button type="button" id="load-session-btn" class="session-btn" title="Load Session">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                    Load
+                </button>
+            </div>
+            <input type="file" id="session-file-input" accept=".fmr,.json" hidden>
             <!-- Unit toggle: switches between metric (m, m/s) and imperial (ft, ft/s) -->
             <div class="unit-toggle">
                 <button type="button" id="unit-metric" class="unit-btn">Metric</button>
@@ -397,6 +417,22 @@
                 <input type="text" id="scenario-name-input" placeholder="Scenario 1" maxlength="30"
                        style="width:100%;padding:0.5rem;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-size:0.85rem">
                 <button type="button" id="scenario-name-save" class="btn-primary" style="margin-top:0.75rem;width:100%">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== Save Session Modal ===== -->
+    <div id="save-session-modal" class="modal-overlay" hidden>
+        <div class="modal" style="max-width:360px">
+            <div class="modal-header">
+                <span>Save Session</span>
+                <button type="button" id="save-session-close" class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="text" id="session-name-input" placeholder="My Launch Session" maxlength="50"
+                       style="width:100%;padding:0.5rem;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-size:0.85rem">
+                <p style="color:var(--text-secondary);font-size:0.75rem;margin:0.5rem 0 0.75rem">Saves all inputs, extracted rocket data, calculations, and pinned scenarios to a .fmr file.</p>
+                <button type="button" id="save-session-go" class="btn-primary" style="margin-top:0;width:100%">Download .fmr File</button>
             </div>
         </div>
     </div>

@@ -76,10 +76,38 @@ header h1 {
     margin-left: 0.25rem;
 }
 
+/* ===== Session Save/Load Buttons ===== */
+.session-btns {
+    display: flex;
+    gap: 0.35rem;
+    margin-left: auto;
+}
+
+.session-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.3rem 0.6rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color 0.2s, color 0.2s;
+}
+
+.session-btn:hover {
+    border-color: var(--accent2);
+    color: var(--accent2);
+}
+
+.session-btn svg { flex-shrink: 0; }
+
 /* ===== Unit Toggle (Metric/Imperial) ===== */
 /* Button group pushed to the right side of the header */
 .unit-toggle {
-    margin-left: auto;
     display: flex;
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -644,6 +672,9 @@ select:focus {
     .deploy-toggle, .unit-toggle { gap: 0; }
     .deploy-btn, .unit-btn { padding: 0.45rem 0.5rem; }
 
+    .session-btn { font-size: 0.65rem; padding: 0.25rem 0.45rem; }
+    .session-btn svg { width: 14px; height: 14px; }
+
     /* Modal fills most of the screen on mobile */
     .modal {
         width: calc(100% - 2rem);
@@ -664,6 +695,8 @@ select:focus {
     header h1 { font-size: 1rem; }
 
     .unit-btn { font-size: 0.65rem; padding: 0.3rem 0.5rem; }
+    .session-btn { font-size: 0; padding: 0.3rem; }
+    .session-btn svg { width: 14px; height: 14px; }
 }
 
 /* ===== Toast Notifications ===== */

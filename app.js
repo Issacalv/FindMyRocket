@@ -2142,6 +2142,362 @@ function reportRow(label, value) {
 }
 
 // ============================================================
+// SESSION SAVE / LOAD (.fmr files)
+// ============================================================
+
+const SESSION_VERSION = 1;
+const saveSessionModal = $('save-session-modal');
+const saveSessionBtn = $('save-session-btn');
+const loadSessionBtn = $('load-session-btn');
+const sessionFileInput = $('session-file-input');
+const sessionNameInput = $('session-name-input');
+
+// --- Serialization helpers ---
+
+function serializeDispersion(disp) {
+    if (!disp) return null;
+    const clone = JSON.parse(JSON.stringify(disp));
+    // forecastTime is a Date — already stringified by JSON.stringify
+    return clone;
+}
+
+function deserializeDispersion(obj) {
+    if (!obj) return null;
+    if (obj.forecastTime && typeof obj.forecastTime === 'string') {
+        obj.forecastTime = new Date(obj.forecastTime);
+    }
+    return obj;
+}
+
+// Collects all saveable application state.
+function collectSessionState(sessionName) {
+    return {
+        version: SESSION_VERSION,
+        appName: 'FindMyRocket',
+        savedAt: new Date().toISOString(),
+        sessionName,
+
+        formInputs: {
+            latitude: latInput.value,
+            longitude: lonInput.value,
+            locationSearch: $('location-search').value,
+            launchDate: launchDateInput.value,
+            launchHour: launchHourSelect.value,
+            launchMin: launchMinSelect.value,
+            launchAmpm: launchAmpmSelect.value,
+            apogee: apogeeInput.value,
+            dr1: dr1Input.value,
+            apogeeDual: $('apogee-dual').value,
+            dr1Dual: $('dr1-dual').value,
+            transition: transitionInput.value,
+            dr2: dr2Input.value,
+            launchAngle: launchAngleInput.value,
+            launchAzimuth: launchAzimuthInput.value,
+            ascentRate: ascentRateInput.value,
+            calcMass: $('calc-mass').value,
+            calcDiameter: $('calc-diameter').value,
+            calcCd: $('calc-cd').value,
+        },
+
+        unitState: {
+            useImperial,
+            massSmallUnit,
+            diaSmallUnit,
+            use24h,
+        },
+
+        dualDeploy,
+
+        orkExtracted: orkFlightData || orkMotorConfigs.length > 0 ? {
+            flightData: orkFlightData,
+            motorConfigs: orkMotorConfigs,
+            rocketName: $('ork-rocket-name')?.textContent || '',
+            motorDesignation: $('ork-motor')?.textContent || '',
+            massDisplay: $('ork-mass')?.textContent || '',
+            recoveryDisplay: $('ork-recovery')?.textContent || '',
+            summaryVisible: !orkSummary.hidden,
+            selectedConfigId: $('ork-motor-select')?.value || null,
+        } : null,
+
+        lastDispersion: serializeDispersion(lastDispersion),
+        lastLaunchLat,
+        lastLaunchLon,
+
+        scenarios: scenarios.map(s => ({
+            id: s.id,
+            name: s.name,
+            color: s.color,
+            visible: s.visible,
+            dispersion: serializeDispersion(s.dispersion),
+            launchLat: s.launchLat,
+            launchLon: s.launchLon,
+        })),
+        activeScenarioIndex,
+        currentVisible,
+        scenarioCounter,
+
+        mapState: {
+            center: [map.getCenter().lat, map.getCenter().lng],
+            zoom: map.getZoom(),
+        },
+    };
+}
+
+// Triggers browser download of the session file.
+function downloadSession(data, filename) {
+    const json = JSON.stringify(data, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+// Clears all current state before loading a session.
+function clearAllState() {
+    // Remove scenario map layers.
+    for (const s of scenarios) {
+        s.mapLayerGroup.clearLayers();
+        s.mapLayerGroup.remove();
+    }
+    scenarios.length = 0;
+    activeScenarioIndex = -1;
+    currentVisible = true;
+    scenarioCounter = 0;
+
+    // Clear current result.
+    lastDispersion = null;
+    lastLaunchLat = null;
+    lastLaunchLon = null;
+    mapLayers.clearLayers();
+    resultsPanel.hidden = true;
+
+    // Clear ork state.
+    orkFlightData = null;
+    orkParsedDoc = null;
+    orkMotorConfigs = [];
+    orkSummary.hidden = true;
+    clearAutoFilled();
+
+    // Clear scenario bar and comparison table.
+    renderScenarioBar();
+    renderComparisonTable();
+}
+
+// Restores all application state from a loaded session.
+function restoreSessionState(data) {
+    clearAllState();
+
+    // 1. Unit system (before form values — values are stored in the saved unit system).
+    const savedImperial = data.unitState?.useImperial ?? true;
+    const savedMassSmall = data.unitState?.massSmallUnit ?? false;
+    const savedDiaSmall = data.unitState?.diaSmallUnit ?? false;
+    const saved24h = data.unitState?.use24h ?? true;
+
+    // Set unit system without converting values (we'll set raw values from save).
+    useImperial = savedImperial;
+    massSmallUnit = savedMassSmall;
+    diaSmallUnit = savedDiaSmall;
+    if (savedImperial) {
+        imperialBtn.classList.add('active');
+        metricBtn.classList.remove('active');
+    } else {
+        metricBtn.classList.add('active');
+        imperialBtn.classList.remove('active');
+    }
+    updateUnitLabels();
+
+    // 2. Time format.
+    use24h = saved24h;
+    timeFormatLabel.textContent = use24h ? '24h' : '12h';
+    populateHourSelect();
+
+    // 3. Deploy mode.
+    const savedDual = data.dualDeploy ?? false;
+    if (savedDual && !dualDeploy) modeDualBtn.click();
+    else if (!savedDual && dualDeploy) modeSingleBtn.click();
+
+    // 4. Form input values.
+    const fi = data.formInputs || {};
+    latInput.value = fi.latitude ?? '';
+    lonInput.value = fi.longitude ?? '';
+    $('location-search').value = fi.locationSearch ?? '';
+    launchDateInput.value = fi.launchDate ?? '';
+    launchHourSelect.value = fi.launchHour ?? '';
+    launchMinSelect.value = fi.launchMin ?? '';
+    launchAmpmSelect.value = fi.launchAmpm ?? 'AM';
+    apogeeInput.value = fi.apogee ?? '';
+    dr1Input.value = fi.dr1 ?? '';
+    $('apogee-dual').value = fi.apogeeDual ?? '';
+    $('dr1-dual').value = fi.dr1Dual ?? '';
+    transitionInput.value = fi.transition ?? '';
+    dr2Input.value = fi.dr2 ?? '';
+    launchAngleInput.value = fi.launchAngle ?? '';
+    launchAzimuthInput.value = fi.launchAzimuth ?? '';
+    ascentRateInput.value = fi.ascentRate ?? '';
+    $('calc-mass').value = fi.calcMass ?? '';
+    $('calc-diameter').value = fi.calcDiameter ?? '';
+    $('calc-cd').value = fi.calcCd ?? '';
+
+    // 5. ORK extracted data (restore display without raw XML).
+    if (data.orkExtracted && data.orkExtracted.summaryVisible) {
+        const ork = data.orkExtracted;
+        orkFlightData = ork.flightData || null;
+        orkMotorConfigs = ork.motorConfigs || [];
+
+        $('ork-rocket-name').textContent = ork.rocketName || 'Unknown Rocket';
+        $('ork-motor').textContent = ork.motorDesignation || '—';
+        $('ork-mass').textContent = ork.massDisplay || '—';
+        $('ork-recovery').textContent = ork.recoveryDisplay || '—';
+        orkSummary.hidden = false;
+
+        // Render motor config selector but disable switching (no raw XML).
+        if (orkMotorConfigs.length > 1) {
+            renderMotorConfigSelector();
+            const select = $('ork-motor-select');
+            if (ork.selectedConfigId) select.value = ork.selectedConfigId;
+            select.disabled = true;
+            select.title = 'Re-import the .ork file to switch motor configurations';
+        }
+    }
+
+    // 6. Map state and launch pin.
+    if (data.mapState) {
+        map.setView(data.mapState.center, data.mapState.zoom);
+    }
+    const lat = parseFloat(fi.latitude);
+    const lon = parseFloat(fi.longitude);
+    if (!isNaN(lat) && !isNaN(lon)) {
+        updatePinPosition(lat, lon);
+    }
+
+    // Update azimuth compass if value exists.
+    const azVal = parseFloat(fi.launchAzimuth);
+    if (!isNaN(azVal)) {
+        const compass = $('azimuth-compass');
+        if (compass) compass.style.transform = `rotate(${azVal}deg)`;
+    }
+
+    // 7. Dispersion results.
+    lastDispersion = deserializeDispersion(data.lastDispersion);
+    lastLaunchLat = data.lastLaunchLat ?? null;
+    lastLaunchLon = data.lastLaunchLon ?? null;
+
+    // 8. Scenarios.
+    if (data.scenarios && data.scenarios.length > 0) {
+        for (const sd of data.scenarios) {
+            scenarios.push({
+                id: sd.id,
+                name: sd.name,
+                color: sd.color,
+                visible: sd.visible,
+                dispersion: deserializeDispersion(sd.dispersion),
+                launchLat: sd.launchLat,
+                launchLon: sd.launchLon,
+                mapLayerGroup: L.layerGroup(),
+            });
+        }
+    }
+    activeScenarioIndex = data.activeScenarioIndex ?? -1;
+    currentVisible = data.currentVisible ?? true;
+    scenarioCounter = data.scenarioCounter ?? 0;
+
+    // 9. Render everything.
+    if (lastDispersion && lastLaunchLat != null) {
+        renderResultCards(lastDispersion);
+        renderWindTable(lastDispersion);
+        renderAllScenarios();
+        resultsPanel.hidden = false;
+    }
+
+    // Show the correct scenario's results if one was selected.
+    if (activeScenarioIndex >= 0 && activeScenarioIndex < scenarios.length) {
+        renderResultCards(scenarios[activeScenarioIndex].dispersion);
+        renderWindTable(scenarios[activeScenarioIndex].dispersion);
+    }
+
+    renderScenarioBar();
+    renderComparisonTable();
+}
+
+// --- Save button handler ---
+saveSessionBtn.addEventListener('click', () => {
+    // Pre-fill session name with rocket name if available.
+    const rocketName = $('ork-rocket-name')?.textContent;
+    const defaultName = rocketName && rocketName !== 'Unknown Rocket' && !orkSummary.hidden
+        ? rocketName
+        : 'FindMyRocket Session';
+    sessionNameInput.value = defaultName;
+    saveSessionModal.hidden = false;
+    sessionNameInput.focus();
+    sessionNameInput.select();
+});
+
+$('save-session-close').addEventListener('click', () => {
+    saveSessionModal.hidden = true;
+});
+
+saveSessionModal.addEventListener('click', (e) => {
+    if (e.target === saveSessionModal) saveSessionModal.hidden = true;
+});
+
+sessionNameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') $('save-session-go').click();
+});
+
+$('save-session-go').addEventListener('click', () => {
+    const name = sessionNameInput.value.trim() || 'FindMyRocket Session';
+    const data = collectSessionState(name);
+    const safeName = name.replace(/[^a-zA-Z0-9_\- ]/g, '').replace(/\s+/g, '_');
+    downloadSession(data, `${safeName}.fmr`);
+    saveSessionModal.hidden = true;
+    showToast('Session saved');
+});
+
+// --- Load button handler ---
+loadSessionBtn.addEventListener('click', () => {
+    sessionFileInput.click();
+});
+
+sessionFileInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    sessionFileInput.value = '';
+
+    try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+
+        // Validate.
+        if (data.appName !== 'FindMyRocket') {
+            throw new Error('Not a valid FindMyRocket session file');
+        }
+        if (typeof data.version !== 'number') {
+            throw new Error('Missing version in session file');
+        }
+        if (data.version > SESSION_VERSION) {
+            showToast('This file was created with a newer version — some data may not load correctly', 'warning');
+        }
+
+        // Confirm if there's existing state.
+        const hasState = lastDispersion || scenarios.length > 0;
+        if (hasState) {
+            if (!confirm('Loading a session will replace all current data. Continue?')) return;
+        }
+
+        restoreSessionState(data);
+        showToast(`Session loaded: ${data.sessionName || file.name}`);
+    } catch (err) {
+        console.error('Session load error:', err);
+        showToast(err.message || 'Failed to load session file', 'error');
+    }
+});
+
+// ============================================================
 // EASTER EGG — click header 5× to launch the rocket icon
 // ============================================================
 (() => {
