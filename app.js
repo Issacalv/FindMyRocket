@@ -92,29 +92,15 @@ const loadingOverlay = $('loading-overlay');
 const formError = $('form-error');
 const resultsPanel = $('results-panel');
 
-// Map DOM input ids to their INPUT_LIMITS keys and enforce limits on blur.
-// HTML min/max attributes only flag the field as :invalid — they do NOT
-// prevent the user from typing or pasting out-of-range values. This
-// listener hard-caps values when the user leaves the field.
+// Map DOM input ids to their INPUT_LIMITS keys. Used below to attach
+// real-time clamping on every keystroke, matching the altitude fields.
 const INPUT_ID_TO_KEY = {
     'latitude': 'latitude', 'longitude': 'longitude',
     'launch-angle': 'launchAngle', 'launch-azimuth': 'launchAzimuth',
     'ascent-rate': 'ascentRate',
-    'apogee': 'apogee', 'apogee-dual': 'apogeeDual', 'transition': 'transition',
     'dr1': 'dr1', 'dr1-dual': 'dr1Dual', 'dr2': 'dr2',
     'calc-mass': 'calcMass', 'calc-diameter': 'calcDiameter', 'calc-cd': 'calcCd',
 };
-for (const [domId, limKey] of Object.entries(INPUT_ID_TO_KEY)) {
-    const el = $(domId);
-    if (!el) continue;
-    el.addEventListener('blur', () => {
-        if (el.value === '') return;
-        const clamped = clampInput(limKey, el.value);
-        if (clamped !== '' && parseFloat(el.value) !== clamped) {
-            el.value = clamped;
-        }
-    });
-}
 
 // Updates both the lat/lon input fields and the draggable map pin.
 // Called from search results, GPS, manual input, and pin drag events.
@@ -562,23 +548,41 @@ function updateDiaToggleable() {
 }
 updateDiaToggleable();
 
-// --- Hard altitude clamp on input ---
-// Prevents the user from typing or pasting a value above the maximum
-// supported altitude. Fires on every keystroke/input event, immediately
-// replacing the value with the max if exceeded.
-function clampAltitudeInput(input) {
+// --- Hard clamp on input (all numeric fields) ---
+// Fires on every keystroke/input event, immediately replacing the value
+// with the min or max if exceeded. Prevents out-of-range values from
+// ever sitting in a field.
+// Altitude fields use dynamic limits (imperial/metric); others use static limits.
+const ALTITUDE_FIELDS = new Set(['apogee', 'apogeeDual', 'transition']);
+
+function attachInputClamp(input, limKey) {
     input.addEventListener('input', () => {
-        const max = useImperial ? MAX_ALTITUDE_FT : MAX_ALTITUDE_M;
         const val = parseFloat(input.value);
-        if (!isNaN(val) && val > max) {
-            input.value = max;
-            showToast(`Max altitude: ${max.toLocaleString()} ${useImperial ? 'ft' : 'm'}`, 'error');
+        if (isNaN(val)) return;
+
+        // Altitude fields use the unit-aware max.
+        let lim = INPUT_LIMITS[limKey];
+        if (ALTITUDE_FIELDS.has(limKey)) {
+            lim = { ...lim, max: useImperial ? MAX_ALTITUDE_FT : MAX_ALTITUDE_M };
+        }
+        if (val > lim.max) {
+            input.value = lim.max;
+        } else if (val < lim.min) {
+            input.value = lim.min;
         }
     });
 }
-clampAltitudeInput(apogeeInput);
-clampAltitudeInput($('apogee-dual'));
-clampAltitudeInput(transitionInput);
+
+// Attach to altitude fields.
+attachInputClamp(apogeeInput, 'apogee');
+attachInputClamp($('apogee-dual'), 'apogeeDual');
+attachInputClamp(transitionInput, 'transition');
+
+// Attach to all other numeric fields.
+for (const [domId, limKey] of Object.entries(INPUT_ID_TO_KEY)) {
+    const el = $(domId);
+    if (el) attachInputClamp(el, limKey);
+}
 
 // ============================================================
 // OPEN-METEO API -- Wind Data Fetching
