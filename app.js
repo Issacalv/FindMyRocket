@@ -24,6 +24,22 @@ let massSmallUnit = false;
 // When true, diameter displays in smaller units (cm instead of m) — metric only.
 let diaSmallUnit = false;
 
+// ============================================================
+// SCENARIO COMPARISON STATE
+// ============================================================
+
+// Pinned scenarios for side-by-side comparison.
+let scenarios = [];
+let activeScenarioIndex = -1; // -1 = current/unsaved result
+let currentVisible = true;    // toggle map visibility for current result
+
+// Wind data cache: avoids re-fetching when only rocket params change.
+const windDataCache = new Map();
+
+// Distinct colors for scenario overlays on the map.
+const SCENARIO_COLORS = ['#ff4c29', '#00d4ff', '#a855f7', '#22c55e', '#f59e0b'];
+const MAX_SCENARIOS = 5; // includes current unsaved result
+
 // --- DOM refs ---
 // Shorthand for getElementById used throughout the file.
 const $ = (id) => document.getElementById(id);
@@ -118,10 +134,7 @@ const launchIcon = L.divIcon({
     html: '<div style="background:#ff4c29;width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 8px rgba(255,76,41,0.6)"></div>',
     className: '', iconSize: [14, 14], iconAnchor: [7, 7]
 });
-const landingIcon = L.divIcon({
-    html: '<div style="background:#00d4ff;width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 8px rgba(0,212,255,0.6)"></div>',
-    className: '', iconSize: [14, 14], iconAnchor: [7, 7]
-});
+// landingIcon replaced by makeLandingIcon(color) for per-scenario colors.
 
 // --- Draggable Launch Pin ---
 // Large teardrop-shaped pin that the user can drag to set the launch location.
@@ -363,6 +376,7 @@ metricBtn.addEventListener('click', () => {
     updateUnitLabels();
     updateDiaToggleable();
     if (lastDispersion) renderResults(lastDispersion, lastLaunchLat, lastLaunchLon);
+    renderComparisonTable();
 });
 
 // Switch to imperial: convert existing values, update labels, re-render results.
@@ -375,6 +389,7 @@ imperialBtn.addEventListener('click', () => {
     updateUnitLabels();
     updateDiaToggleable();
     if (lastDispersion) renderResults(lastDispersion, lastLaunchLat, lastLaunchLon);
+    renderComparisonTable();
 });
 
 // Set initial labels for the default unit system (imperial).
@@ -513,6 +528,11 @@ async function fetchWindData(lat, lon, launchTime) {
     }
 }
 
+// Builds a cache key for wind data based on location and time.
+function buildWindCacheKey(lat, lon, dateStr, hh, mm) {
+    return `${lat.toFixed(4)}_${lon.toFixed(4)}_${dateStr}_${hh}:${mm}`;
+}
+
 // Wind profile construction, interpolation, drift calculation,
 // dispersion, ellipse fitting, and utility functions are in calc.js.
 
@@ -526,76 +546,66 @@ let lastDispersion = null;
 let lastLaunchLat = null;
 let lastLaunchLon = null;
 
-// Renders all calculation results: map overlays, result cards, and wind table.
-function renderResults(dispersion, lat, lon) {
-    lastDispersion = dispersion;
-    lastLaunchLat = lat;
-    lastLaunchLon = lon;
-    const { primaryResult, primaryProfile, primaryAscentPath, ellipse, forecastTime, apogee } = dispersion;
+// Creates a colored dot icon for landing markers.
+function makeLandingIcon(color) {
+    return L.divIcon({
+        html: `<div style="background:${color};width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 8px ${color}99"></div>`,
+        className: '', iconSize: [14, 14], iconAnchor: [7, 7]
+    });
+}
 
-    // Clear previous overlays (markers, paths, ellipse).
-    mapLayers.clearLayers();
+// Draws map overlays (markers, paths, ellipse) for one scenario into
+// a given layer group using the specified color.
+function renderMapOverlays(dispersion, color, layerGroup) {
+    const { primaryResult, primaryAscentPath, ellipse } = dispersion;
 
-    // Launch site marker (orange dot).
-    L.marker([lat, lon], { icon: launchIcon })
-        .bindPopup('<b>Launch Site</b>')
-        .addTo(mapLayers);
-
-    // Dashed polyline showing the predicted drift path from launch to landing.
+    // Drift path polyline.
     L.polyline(primaryResult.path, {
-        color: '#ff4c29', weight: 2, opacity: 0.7, dashArray: '6,4'
-    }).addTo(mapLayers);
+        color, weight: 2, opacity: 0.7, dashArray: '6,4'
+    }).addTo(layerGroup);
 
-    // Landing site marker (cyan dot).
-    L.marker([primaryResult.landingLat, primaryResult.landingLon], { icon: landingIcon })
+    // Landing marker with scenario color.
+    L.marker([primaryResult.landingLat, primaryResult.landingLon], { icon: makeLandingIcon(color) })
         .bindPopup('<b>Predicted Landing</b>')
-        .addTo(mapLayers);
+        .addTo(layerGroup);
 
-    // Dispersion ellipse polygon (semi-transparent orange fill).
+    // Dispersion ellipse.
+    const multiScenario = scenarios.length > 0;
     if (ellipse && ellipse.semiMajor > 0) {
         const pts = createEllipsePoints(
             [ellipse.centerLat, ellipse.centerLon],
             ellipse.semiMajor, ellipse.semiMinor, ellipse.rotation
         );
         L.polygon(pts, {
-            color: '#ff4c29', fillColor: '#ff4c29', fillOpacity: 0.12, weight: 2, dashArray: '4,4'
-        }).addTo(mapLayers);
+            color, fillColor: color, fillOpacity: multiScenario ? 0.08 : 0.12,
+            weight: 2, dashArray: '4,4'
+        }).addTo(layerGroup);
     }
 
-    // Ascent path from launch angle simulation or OpenRocket data (if available).
+    // Ascent path (if available).
     if (primaryAscentPath && primaryAscentPath.length > 1) {
         L.polyline(primaryAscentPath, {
-            color: '#00d4ff', weight: 2, opacity: 0.5, dashArray: '4,6'
-        }).addTo(mapLayers);
+            color, weight: 2, opacity: 0.5, dashArray: '4,6'
+        }).addTo(layerGroup);
 
-        // Apogee marker (orange dot at the top of the ascent path).
         const apogeePoint = primaryAscentPath[primaryAscentPath.length - 1];
         const apogeeIcon = L.divIcon({
-            html: '<div style="background:#ff8c42;width:10px;height:10px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 6px rgba(255,140,66,0.6)"></div>',
+            html: `<div style="background:${color};width:10px;height:10px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 6px ${color}99"></div>`,
             className: '', iconSize: [10, 10], iconAnchor: [5, 5]
         });
         L.marker(apogeePoint, { icon: apogeeIcon })
             .bindPopup('<b>Apogee</b>')
-            .addTo(mapLayers);
+            .addTo(layerGroup);
     }
+}
 
-    // Auto-zoom the map to fit all overlays with some padding.
-    const bounds = L.latLngBounds([[lat, lon], [primaryResult.landingLat, primaryResult.landingLon]]);
-    if (ellipse) {
-        const pts = createEllipsePoints(
-            [ellipse.centerLat, ellipse.centerLon],
-            ellipse.semiMajor, ellipse.semiMinor, ellipse.rotation
-        );
-        pts.forEach(p => bounds.extend(p));
-    }
-    map.fitBounds(bounds.pad(0.3));
-
-    // --- Update result card values ---
+// Updates the 6 result card DOM elements with values from a dispersion result.
+function renderResultCards(dispersion) {
+    const { primaryResult, ellipse, forecastTime } = dispersion;
 
     $('res-landing').textContent =
         `${primaryResult.landingLat.toFixed(5)}, ${primaryResult.landingLon.toFixed(5)}`;
 
-    // Drift distance: show in ft/mi or m/km depending on unit system.
     const dist = primaryResult.driftDistance;
     if (useImperial) {
         const distFt = dist * FT_PER_M;
@@ -608,17 +618,14 @@ function renderResults(dispersion, lat, lon) {
             : `${(dist / 1000).toFixed(2)} km`;
     }
 
-    // Drift bearing with compass direction (e.g., "106 deg (E)").
     $('res-bearing').textContent =
         `${primaryResult.driftBearing.toFixed(0)}° (${bearingToCompass(primaryResult.driftBearing)})`;
 
-    // Total descent time formatted as seconds or minutes+seconds.
     $('res-time').textContent =
         primaryResult.totalTime < 60
             ? `${primaryResult.totalTime.toFixed(0)} s`
             : `${Math.floor(primaryResult.totalTime / 60)}m ${Math.round(primaryResult.totalTime % 60)}s`;
 
-    // Dispersion zone dimensions (major x minor axis).
     if (ellipse) {
         if (useImperial) {
             $('res-dispersion').textContent =
@@ -631,21 +638,19 @@ function renderResults(dispersion, lat, lon) {
         $('res-dispersion').textContent = '—';
     }
 
-    // Forecast time used for the primary prediction.
     if (forecastTime) {
         $('res-forecast-time').textContent = forecastTime.toLocaleString([], {
             month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
         });
     }
+}
 
-    // --- Wind profile table ---
-    // Shows wind speed and direction at each altitude layer.
+// Populates the wind profile table for a given dispersion result.
+function renderWindTable(dispersion) {
+    const { primaryProfile, apogee } = dispersion;
     const tbody = document.querySelector('#wind-table tbody');
     tbody.innerHTML = '';
     if (primaryProfile) {
-        // Only show wind layers up to the deployment altitude, plus one
-        // layer above it for context. No need to show 50,000 ft winds
-        // when the rocket only reaches 1,000 ft.
         let layersAbove = 0;
         for (const layer of primaryProfile) {
             if (layer.altitude > apogee) {
@@ -663,9 +668,326 @@ function renderResults(dispersion, lat, lon) {
             tbody.appendChild(tr);
         }
     }
+}
+
+// Redraws map with launch marker + all visible scenario overlays + current result.
+function renderAllScenarios() {
+    mapLayers.clearLayers();
+
+    // Shared launch marker (always orange).
+    const lat = lastLaunchLat;
+    const lon = lastLaunchLon;
+    if (lat == null || lon == null) return;
+    L.marker([lat, lon], { icon: launchIcon })
+        .bindPopup('<b>Launch Site</b>')
+        .addTo(mapLayers);
+
+    // Draw pinned scenarios that are visible.
+    for (const s of scenarios) {
+        s.mapLayerGroup.clearLayers();
+        if (s.visible) {
+            renderMapOverlays(s.dispersion, s.color, s.mapLayerGroup);
+            s.mapLayerGroup.addTo(map);
+        } else {
+            s.mapLayerGroup.remove();
+        }
+    }
+
+    // Draw current (unsaved) result if visible.
+    if (lastDispersion && currentVisible) {
+        renderMapOverlays(lastDispersion, '#ff4c29', mapLayers);
+    }
+
+    // Fit bounds to all visible overlays.
+    const bounds = L.latLngBounds([[lat, lon]]);
+    if (lastDispersion && currentVisible) {
+        const r = lastDispersion.primaryResult;
+        bounds.extend([r.landingLat, r.landingLon]);
+        if (lastDispersion.ellipse) {
+            createEllipsePoints(
+                [lastDispersion.ellipse.centerLat, lastDispersion.ellipse.centerLon],
+                lastDispersion.ellipse.semiMajor, lastDispersion.ellipse.semiMinor, lastDispersion.ellipse.rotation
+            ).forEach(p => bounds.extend(p));
+        }
+    }
+    for (const s of scenarios) {
+        if (!s.visible) continue;
+        const r = s.dispersion.primaryResult;
+        bounds.extend([r.landingLat, r.landingLon]);
+        if (s.dispersion.ellipse) {
+            createEllipsePoints(
+                [s.dispersion.ellipse.centerLat, s.dispersion.ellipse.centerLon],
+                s.dispersion.ellipse.semiMajor, s.dispersion.ellipse.semiMinor, s.dispersion.ellipse.rotation
+            ).forEach(p => bounds.extend(p));
+        }
+    }
+    map.fitBounds(bounds.pad(0.3));
+}
+
+// Renders all calculation results: map overlays, result cards, and wind table.
+function renderResults(dispersion, lat, lon) {
+    lastDispersion = dispersion;
+    lastLaunchLat = lat;
+    lastLaunchLon = lon;
+
+    renderResultCards(dispersion);
+    renderWindTable(dispersion);
+    renderAllScenarios();
 
     resultsPanel.hidden = false;
 }
+
+// ============================================================
+// SCENARIO COMPARISON
+// ============================================================
+
+const scenarioBar = $('scenario-bar');
+const comparisonPanel = $('comparison-panel');
+const comparisonTable = $('comparison-table');
+const scenarioNameModal = $('scenario-name-modal');
+const scenarioNameInput = $('scenario-name-input');
+let scenarioCounter = 0;
+
+// Returns the next available color from the palette.
+function nextScenarioColor() {
+    const used = new Set(scenarios.map(s => s.color));
+    // Skip orange (#ff4c29) — reserved for the current unsaved result.
+    for (const c of SCENARIO_COLORS) {
+        if (c !== '#ff4c29' && !used.has(c)) return c;
+    }
+    return SCENARIO_COLORS[1]; // fallback
+}
+
+// Opens the name modal and resolves with the entered name (or null if cancelled).
+function promptScenarioName() {
+    return new Promise(resolve => {
+        scenarioCounter++;
+        scenarioNameInput.value = `Scenario ${scenarioCounter}`;
+        scenarioNameModal.hidden = false;
+        scenarioNameInput.focus();
+        scenarioNameInput.select();
+
+        function cleanup() {
+            scenarioNameModal.hidden = true;
+            $('scenario-name-save').removeEventListener('click', onSave);
+            $('scenario-name-close').removeEventListener('click', onClose);
+            scenarioNameInput.removeEventListener('keydown', onKey);
+        }
+        function onSave() { cleanup(); resolve(scenarioNameInput.value.trim() || `Scenario ${scenarioCounter}`); }
+        function onClose() { cleanup(); resolve(null); }
+        function onKey(e) { if (e.key === 'Enter') onSave(); if (e.key === 'Escape') onClose(); }
+
+        $('scenario-name-save').addEventListener('click', onSave);
+        $('scenario-name-close').addEventListener('click', onClose);
+        scenarioNameInput.addEventListener('keydown', onKey);
+    });
+}
+
+// Pins the current result as a named scenario.
+async function pinScenario() {
+    if (!lastDispersion) return showToast('Run a calculation first', 'warning');
+    if (scenarios.length >= MAX_SCENARIOS - 1) {
+        return showToast(`Maximum ${MAX_SCENARIOS - 1} pinned scenarios`, 'warning');
+    }
+
+    const name = await promptScenarioName();
+    if (!name) return;
+
+    const scenario = {
+        id: crypto.randomUUID(),
+        name,
+        color: nextScenarioColor(),
+        visible: true,
+        dispersion: lastDispersion,
+        launchLat: lastLaunchLat,
+        launchLon: lastLaunchLon,
+        mapLayerGroup: L.layerGroup(),
+    };
+
+    scenarios.push(scenario);
+    activeScenarioIndex = scenarios.length - 1;
+    renderScenarioBar();
+    renderComparisonTable();
+    renderAllScenarios();
+    showToast(`Pinned "${name}"`, 'info');
+}
+
+// Removes a pinned scenario by ID.
+function removeScenario(id) {
+    const idx = scenarios.findIndex(s => s.id === id);
+    if (idx === -1) return;
+    scenarios[idx].mapLayerGroup.remove();
+    scenarios.splice(idx, 1);
+    if (activeScenarioIndex >= scenarios.length) activeScenarioIndex = scenarios.length - 1;
+    renderScenarioBar();
+    renderComparisonTable();
+    renderAllScenarios();
+}
+
+// Toggles map overlay visibility for a scenario.
+function toggleScenarioVisibility(id) {
+    const s = scenarios.find(s => s.id === id);
+    if (!s) return;
+    s.visible = !s.visible;
+    if (s.visible) {
+        s.mapLayerGroup.addTo(map);
+    } else {
+        s.mapLayerGroup.remove();
+    }
+    renderScenarioBar();
+    renderAllScenarios();
+}
+
+// Selects a scenario to show its result cards and wind table.
+function selectScenario(index) {
+    activeScenarioIndex = index;
+    if (index >= 0 && index < scenarios.length) {
+        renderResultCards(scenarios[index].dispersion);
+        renderWindTable(scenarios[index].dispersion);
+    } else if (lastDispersion) {
+        renderResultCards(lastDispersion);
+        renderWindTable(lastDispersion);
+    }
+    renderScenarioBar();
+}
+
+// Eye icon SVGs.
+const EYE_OPEN_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_CLOSED_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+
+// Renders the scenario bar with chips.
+function renderScenarioBar() {
+    if (scenarios.length === 0) {
+        scenarioBar.hidden = true;
+        return;
+    }
+    scenarioBar.hidden = false;
+    scenarioBar.innerHTML = '';
+
+    // "Current" chip
+    const currentChip = document.createElement('div');
+    currentChip.className = `scenario-chip${activeScenarioIndex === -1 ? ' active' : ''}${!currentVisible ? ' hidden-scenario' : ''}`;
+    currentChip.innerHTML = `
+        <span class="scenario-dot" style="background:#ff4c29"></span>
+        <span class="scenario-name">Current</span>
+        <button class="eye-btn" title="${currentVisible ? 'Hide' : 'Show'} on map">${currentVisible ? EYE_OPEN_SVG : EYE_CLOSED_SVG}</button>
+    `;
+    currentChip.addEventListener('click', (e) => {
+        if (e.target.closest('.eye-btn')) return;
+        selectScenario(-1);
+    });
+    currentChip.querySelector('.eye-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        currentVisible = !currentVisible;
+        renderScenarioBar();
+        renderAllScenarios();
+    });
+    scenarioBar.appendChild(currentChip);
+
+    // Pinned scenario chips
+    scenarios.forEach((s, i) => {
+        const chip = document.createElement('div');
+        chip.className = `scenario-chip${activeScenarioIndex === i ? ' active' : ''}${!s.visible ? ' hidden-scenario' : ''}`;
+        chip.innerHTML = `
+            <span class="scenario-dot" style="background:${s.color}"></span>
+            <span class="scenario-name">${s.name}</span>
+            <button class="eye-btn" title="${s.visible ? 'Hide' : 'Show'} on map">${s.visible ? EYE_OPEN_SVG : EYE_CLOSED_SVG}</button>
+            <button class="remove-btn" title="Remove">&times;</button>
+        `;
+
+        // Click chip body to select.
+        chip.addEventListener('click', (e) => {
+            if (e.target.closest('.eye-btn') || e.target.closest('.remove-btn')) return;
+            selectScenario(i);
+        });
+
+        // Eye toggle.
+        chip.querySelector('.eye-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleScenarioVisibility(s.id);
+        });
+
+        // Remove button.
+        chip.querySelector('.remove-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            removeScenario(s.id);
+        });
+
+        scenarioBar.appendChild(chip);
+    });
+}
+
+// Formats a dispersion result value for the comparison table.
+function formatComparisonValue(dispersion, metric) {
+    const { primaryResult, ellipse, forecastTime } = dispersion;
+    switch (metric) {
+        case 'landing':
+            return `${primaryResult.landingLat.toFixed(5)}, ${primaryResult.landingLon.toFixed(5)}`;
+        case 'distance': {
+            const dist = primaryResult.driftDistance;
+            if (useImperial) {
+                const distFt = dist * FT_PER_M;
+                return distFt < 5280 ? `${distFt.toFixed(0)} ft` : `${(distFt / 5280).toFixed(2)} mi`;
+            }
+            return dist < 1000 ? `${dist.toFixed(0)} m` : `${(dist / 1000).toFixed(2)} km`;
+        }
+        case 'bearing':
+            return `${primaryResult.driftBearing.toFixed(0)}° (${bearingToCompass(primaryResult.driftBearing)})`;
+        case 'time':
+            return primaryResult.totalTime < 60
+                ? `${primaryResult.totalTime.toFixed(0)} s`
+                : `${Math.floor(primaryResult.totalTime / 60)}m ${Math.round(primaryResult.totalTime % 60)}s`;
+        case 'dispersion':
+            if (!ellipse) return '—';
+            if (useImperial) return `${Math.round(ellipse.semiMajor * 2 * FT_PER_M)} x ${Math.round(ellipse.semiMinor * 2 * FT_PER_M)} ft`;
+            return `${Math.round(ellipse.semiMajor * 2)} x ${Math.round(ellipse.semiMinor * 2)} m`;
+        case 'forecast':
+            return forecastTime ? forecastTime.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+        default: return '—';
+    }
+}
+
+// Builds the comparison table from all pinned scenarios + current result.
+function renderComparisonTable() {
+    if (scenarios.length === 0) {
+        comparisonPanel.hidden = true;
+        return;
+    }
+    comparisonPanel.hidden = false;
+
+    const metrics = [
+        { key: 'landing', label: 'Landing' },
+        { key: 'distance', label: 'Drift Distance' },
+        { key: 'bearing', label: 'Bearing' },
+        { key: 'time', label: 'Descent Time' },
+        { key: 'dispersion', label: 'Dispersion' },
+        { key: 'forecast', label: 'Forecast Time' },
+    ];
+
+    // Build columns: current + pinned scenarios.
+    const columns = [];
+    if (lastDispersion) columns.push({ name: 'Current', color: '#ff4c29', dispersion: lastDispersion });
+    for (const s of scenarios) columns.push({ name: s.name, color: s.color, dispersion: s.dispersion });
+
+    let html = '<thead><tr><th></th>';
+    for (const col of columns) {
+        html += `<th><span class="col-dot" style="background:${col.color}"></span>${col.name}</th>`;
+    }
+    html += '</tr></thead><tbody>';
+
+    for (const m of metrics) {
+        html += `<tr><td>${m.label}</td>`;
+        for (const col of columns) {
+            html += `<td>${formatComparisonValue(col.dispersion, m.key)}</td>`;
+        }
+        html += '</tr>';
+    }
+    html += '</tbody>';
+    comparisonTable.innerHTML = html;
+}
+
+// Pin scenario button handler.
+$('pin-scenario-btn').addEventListener('click', pinScenario);
 
 // ============================================================
 // UTILITIES
@@ -768,7 +1090,18 @@ form.addEventListener('submit', async (e) => {
     loadingOverlay.classList.add('active');
 
     try {
-        const apiData = await fetchWindData(lat, lon, launchTime);
+        // Check wind data cache before making an API call.
+        const cacheKey = buildWindCacheKey(lat, lon, launchDateVal, hh, mm);
+        let apiData;
+        const cached = windDataCache.get(cacheKey);
+        if (cached) {
+            apiData = cached.apiData;
+            isHistoricalData = cached.isHistorical;
+            showToast('Reusing cached wind data', 'info');
+        } else {
+            apiData = await fetchWindData(lat, lon, launchTime);
+            windDataCache.set(cacheKey, { apiData, isHistorical: isHistoricalData });
+        }
         if (isHistoricalData) {
             showToast('Historical date — using surface wind extrapolation (less accurate above 100m)', 'warning');
         }
@@ -1418,6 +1751,7 @@ exportGo.addEventListener('click', async () => {
         forecast: $('exp-forecast').checked,
         wind: $('exp-wind').checked,
         launch: $('exp-launch').checked,
+        comparison: $('exp-comparison').checked,
     };
 
     // If the export needs a different map layer than what's currently
@@ -1507,6 +1841,41 @@ exportGo.addEventListener('click', async () => {
         }
     }
 
+    // Build scenario comparison table HTML if requested and scenarios exist.
+    let comparisonHtml = '';
+    if (checks.comparison && scenarios.length > 0) {
+        const metrics = [
+            { key: 'landing', label: 'Landing' },
+            { key: 'distance', label: 'Drift Distance' },
+            { key: 'bearing', label: 'Bearing' },
+            { key: 'time', label: 'Descent Time' },
+            { key: 'dispersion', label: 'Dispersion' },
+            { key: 'forecast', label: 'Forecast Time' },
+        ];
+        const cols = [];
+        if (lastDispersion) cols.push({ name: 'Current', color: '#ff4c29', dispersion: lastDispersion });
+        for (const s of scenarios) cols.push({ name: s.name, color: s.color, dispersion: s.dispersion });
+
+        let ths = '<th style="text-align:left;padding:4px 8px;color:#888"></th>';
+        for (const col of cols) {
+            ths += `<th style="text-align:center;padding:4px 8px;color:#888;font-size:11px;text-transform:uppercase"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${col.color};margin-right:4px;vertical-align:middle"></span>${col.name}</th>`;
+        }
+        let trs = '';
+        for (const m of metrics) {
+            trs += `<tr><td style="padding:4px 8px;color:#888;font-size:11px;text-transform:uppercase;border-bottom:1px solid #1a2236">${m.label}</td>`;
+            for (const col of cols) {
+                trs += `<td style="padding:4px 8px;text-align:center;font-family:Consolas,monospace;font-size:12px;border-bottom:1px solid #1a2236">${formatComparisonValue(col.dispersion, m.key)}</td>`;
+            }
+            trs += '</tr>';
+        }
+        comparisonHtml = `
+            <h3 style="margin:16px 0 6px;font-size:13px;color:#00d4ff;text-transform:uppercase;letter-spacing:0.5px">Scenario Comparison</h3>
+            <table style="width:100%;border-collapse:collapse;font-size:12px">
+                <thead><tr style="border-bottom:2px solid #333">${ths}</tr></thead>
+                <tbody>${trs}</tbody>
+            </table>`;
+    }
+
     // Self-contained HTML report with dark theme and print-friendly styles.
     const reportHtml = `<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><title>FindMyRocket Field Report</title>
@@ -1539,6 +1908,7 @@ exportGo.addEventListener('click', async () => {
     </div>
     ${mapDataUrl ? `<img class="map-img" src="${mapDataUrl}" alt="Map">` : ''}
     <div class="data-grid">${dataRows}</div>
+    ${comparisonHtml}
     ${windTableHtml}
     <div class="footer">Generated by FindMyRocket Landing Dispersion Calculator</div>
     <script>window.onafterprint=()=>{};window.onload=()=>{document.title='FindMyRocket_Report_${now.toISOString().slice(0,10)}'}<\/script>

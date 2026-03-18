@@ -688,6 +688,131 @@ select:focus {
     margin-bottom: 0.4rem;
 }
 
+.results-header-btns {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+}
+
+/* Pin scenario button: orange outlined style */
+.btn-pin {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.75rem;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--accent);
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
+    white-space: nowrap;
+}
+.btn-pin:hover {
+    background: var(--accent);
+    color: #fff;
+}
+
+/* ===== Scenario Bar ===== */
+.scenario-bar {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.75rem;
+    padding: 0.4rem 0;
+}
+
+.scenario-chip {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.3rem 0.55rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    font-size: 0.75rem;
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: border-color 0.2s, opacity 0.2s;
+    user-select: none;
+}
+.scenario-chip:hover { border-color: var(--text-secondary); }
+.scenario-chip.active { border-color: var(--accent2); box-shadow: 0 0 6px var(--accent2-glow); }
+.scenario-chip.hidden-scenario { opacity: 0.5; }
+
+.scenario-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.scenario-chip .scenario-name {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.scenario-chip .eye-btn,
+.scenario-chip .remove-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 0 0.1rem;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    transition: color 0.2s;
+}
+.scenario-chip .eye-btn:hover,
+.scenario-chip .remove-btn:hover { color: var(--text-primary); }
+
+/* ===== Comparison Table ===== */
+.comparison-panel { margin-top: 0; }
+
+#comparison-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+}
+#comparison-table th {
+    text-align: center;
+    padding: 0.5rem 0.4rem;
+    color: var(--text-secondary);
+    border-bottom: 2px solid var(--border);
+    font-weight: 600;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+#comparison-table td {
+    padding: 0.4rem 0.4rem;
+    border-bottom: 1px solid rgba(42, 52, 80, 0.4);
+    font-family: 'Consolas', 'SF Mono', 'Fira Mono', monospace;
+    text-align: center;
+    font-size: 0.8rem;
+}
+#comparison-table td:first-child {
+    text-align: left;
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+.col-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 0.3rem;
+    vertical-align: middle;
+}
+
 /* Export button: cyan outlined style */
 .btn-export {
     display: flex;

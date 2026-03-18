@@ -262,12 +262,23 @@
     <section id="results-panel" hidden>
         <div class="results-header">
             <div class="section-title" style="margin-top:0;padding-top:0;border-top:none">Results</div>
-            <!-- Opens the export modal to generate a printable field report -->
-            <button type="button" id="export-btn" class="btn-export">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                Export
-            </button>
+            <div class="results-header-btns">
+                <!-- Pin current results as a named scenario for comparison -->
+                <button type="button" id="pin-scenario-btn" class="btn-pin" title="Pin this result for comparison">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 17v5"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.89A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.89A2 2 0 0 0 5 15.24Z"/></svg>
+                    Pin Scenario
+                </button>
+                <!-- Opens the export modal to generate a printable field report -->
+                <button type="button" id="export-btn" class="btn-export">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    Export
+                </button>
+            </div>
         </div>
+
+        <!-- Scenario bar: shows pinned scenario chips for comparison -->
+        <div id="scenario-bar" class="scenario-bar" hidden></div>
+
         <!-- Result cards: each shows one calculated value -->
         <div class="results-grid">
             <div class="result-card">
@@ -295,6 +306,14 @@
                 <div class="result-value" id="res-forecast-time">—</div>
             </div>
         </div>
+        <!-- Scenario comparison table (shown when scenarios are pinned) -->
+        <div id="comparison-panel" class="comparison-panel" hidden>
+            <div class="section-title" style="margin-top:1rem">Scenario Comparison</div>
+            <div class="table-wrap">
+                <table id="comparison-table"></table>
+            </div>
+        </div>
+
         <!-- Wind profile table: altitude vs. speed vs. direction -->
         <div class="section-title" style="margin-top:1rem">Wind Profile</div>
         <div class="table-wrap">
@@ -345,6 +364,7 @@
                     <label class="export-check"><input type="checkbox" id="exp-forecast"> Forecast Time</label>
                     <label class="export-check"><input type="checkbox" id="exp-wind"> Wind Profile Table</label>
                     <label class="export-check"><input type="checkbox" id="exp-launch" checked> Launch Location</label>
+                    <label class="export-check"><input type="checkbox" id="exp-comparison" checked> Scenario Comparison</label>
                 </div>
                 <!-- Generate button: captures the map and opens the report in a new tab -->
                 <button type="button" id="export-go" class="btn-primary" style="margin-top:0.75rem">
@@ -352,6 +372,22 @@
                 </button>
                 <!-- Status text shown during report generation -->
                 <div id="export-status" style="font-size:0.75rem;color:var(--text-secondary);margin-top:0.4rem;text-align:center" hidden></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== Scenario Name Modal ===== -->
+    <!-- Small prompt for naming a pinned scenario -->
+    <div id="scenario-name-modal" class="modal-overlay" hidden>
+        <div class="modal" style="max-width:360px">
+            <div class="modal-header">
+                <span>Name This Scenario</span>
+                <button type="button" id="scenario-name-close" class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="text" id="scenario-name-input" placeholder="Scenario 1" maxlength="30"
+                       style="width:100%;padding:0.5rem;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-size:0.85rem">
+                <button type="button" id="scenario-name-save" class="btn-primary" style="margin-top:0.75rem;width:100%">Save</button>
             </div>
         </div>
     </div>
