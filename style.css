@@ -432,6 +432,9 @@ select:focus {
     cursor: not-allowed;
 }
 
+/* Ensure hidden attribute always wins over display rules */
+[hidden] { display: none !important; }
+
 /* Secondary button (outlined, e.g., "Use My Location", "Use Current Time") */
 .btn-secondary {
     display: flex;

@@ -1759,6 +1759,8 @@ function updateCalcButtons() {
     $('calc-apply-single').hidden = true;
     $('calc-apply-drogue').hidden = !dualDeploy;
     $('calc-apply-main').hidden = !dualDeploy;
+    // Hide the entire actions container in single deploy mode
+    $('calc-apply-drogue').parentElement.hidden = !dualDeploy;
 }
 updateCalcButtons();
 
