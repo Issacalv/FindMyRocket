@@ -1,60 +1,17 @@
 // ============================================================
 // FindMyRocket -- Landing Dispersion Calculator
 //
-// This file contains all application logic:
-//   1. Constants and unit conversion factors
-//   2. DOM initialization (dropdowns, date/time defaults)
-//   3. Leaflet map setup (street/satellite layers, markers, draggable pin)
-//   4. Location search via Nominatim geocoding API
-//   5. Unit system toggle (metric/imperial) with live conversion
-//   6. Wind data fetching from Open-Meteo (forecast + historical archive)
-//   7. Wind profile construction and altitude interpolation
-//   8. Drift simulation via numerical integration (50m steps)
-//   9. Dispersion zone calculation with Monte Carlo-style perturbations
-//  10. Covariance-based ellipse fitting for the 95% confidence zone
-//  11. Results rendering (map overlays, result cards, wind table)
-//  12. Map capture to canvas for the export feature
-//  13. Export modal and HTML field report generation
+// This file contains the application UI and interaction logic.
+// Pure calculation functions live in calc.js for testability.
 // ============================================================
 
-// --- Constants ---
-
-// Standard atmospheric pressure levels (in hPa) used by the Open-Meteo
-// forecast API. These correspond to altitudes from near sea level (~110m
-// at 1000 hPa) up to ~16,180m at 100 hPa. Wind speed, wind direction,
-// and geopotential height are fetched at each of these levels.
-const PRESSURE_LEVELS = [1000, 975, 950, 925, 900, 850, 800, 700, 600, 500, 400, 300, 250, 200, 150, 100];
-
-// Approximate altitudes (meters) for each pressure level, used as a
-// fallback when the API doesn't return geopotential height data.
-// Values are from the International Standard Atmosphere (ISA).
-const FALLBACK_ALTITUDES = {
-    1000: 110, 975: 320, 950: 540, 925: 760, 900: 990,
-    850: 1460, 800: 1950, 700: 3010, 600: 4210, 500: 5570,
-    400: 7190, 300: 9160, 250: 10360, 200: 11780, 150: 13600, 100: 16180
-};
-
-// Altitude step size (meters) for the numerical integration during
-// drift calculation. Smaller steps = more accurate but slower.
-const ALT_STEP = 50;
-
-const DEG_TO_RAD = Math.PI / 180;
-
-// Approximate meters per degree of latitude (constant everywhere on Earth).
-// Longitude conversion requires an additional cos(latitude) factor.
-const METERS_PER_DEG_LAT = 111320;
-
-// --- Unit System ---
-
-const FT_PER_M = 3.28084;       // feet per meter
-const FPS_PER_MS = 3.28084;     // ft/s per m/s (same numeric value)
-const MPH_PER_MS = 2.23694;     // mph per m/s
-
-// Hard altitude cap based on the highest pressure level (100 hPa).
-// Prevents out-of-memory from extremely large altitude inputs, since the
-// drift loop creates one path point per 50m step.
-const MAX_ALTITUDE_M = 16200;
-const MAX_ALTITUDE_FT = Math.round(MAX_ALTITUDE_M * FT_PER_M);
+import {
+    PRESSURE_LEVELS,
+    FT_PER_M, FPS_PER_MS, MPH_PER_MS,
+    MAX_ALTITUDE_M, MAX_ALTITUDE_FT,
+    calculateDispersion, createEllipsePoints,
+    bearingToCompass, calcDescentRateFromParams
+} from './calc.js';
 
 // Current unit system flag. When true, all displayed values and user
 // inputs are in imperial (ft, ft/s, mph). Internal calculations always
@@ -74,6 +31,9 @@ const dr2Input = $('dr2');
 const launchDateInput = $('launch-date');
 const launchHourSelect = $('launch-hour');
 const launchMinSelect = $('launch-min');
+const launchAngleInput = $('launch-angle');
+const launchAzimuthInput = $('launch-azimuth');
+const ascentRateInput = $('ascent-rate');
 const loadingOverlay = $('loading-overlay');
 const formError = $('form-error');
 const resultsPanel = $('results-panel');
@@ -319,6 +279,9 @@ function updateUnitLabels() {
     transitionInput.placeholder = useImperial ? '656' : '200';
     dr2Input.placeholder = useImperial ? '16' : '5';
 
+    // Ascent rate placeholder
+    ascentRateInput.placeholder = useImperial ? '150' : '45';
+
     // Descent rate calculator units
     const calcMassUnit = $('calc-mass-unit');
     if (calcMassUnit) {
@@ -343,7 +306,8 @@ function convertInputValues(toImperial) {
         { input: transitionInput, factor: FT_PER_M },
         { input: dr2Input, factor: FPS_PER_MS },
         { input: $('calc-mass'), factor: LB_PER_KG },
-        { input: $('calc-diameter'), factor: IN_PER_M }
+        { input: $('calc-diameter'), factor: IN_PER_M },
+        { input: ascentRateInput, factor: FPS_PER_MS }
     ];
     for (const { input, factor } of fields) {
         const val = parseFloat(input.value);
@@ -460,316 +424,8 @@ async function fetchWindData(lat, lon, launchTime) {
     }
 }
 
-// ============================================================
-// WIND PROFILE CONSTRUCTION
-// ============================================================
-
-// Builds an array of { altitude, speed, direction } objects for a
-// given hour index in the API response. The array is sorted by
-// altitude (ascending), which is required for interpolation.
-//
-// For forecast data: each pressure level provides a direct measurement.
-// For historical data: only 10m and 100m winds are available, so higher
-// altitudes are extrapolated using the power-law wind profile model:
-//   speed(z) = speed_ref * (z / z_ref) ^ alpha
-// where alpha is derived from the ratio of 100m to 10m wind speeds.
-function buildWindProfile(data, hourIndex) {
-    const profile = [];
-
-    if (isHistoricalData) {
-        // Extract the two available surface wind measurements.
-        const spd10 = data.hourly.wind_speed_10m?.[hourIndex] ?? 0;
-        const dir10 = data.hourly.wind_direction_10m?.[hourIndex] ?? 0;
-        const spd100 = data.hourly.wind_speed_100m?.[hourIndex] ?? spd10;
-        const dir100 = data.hourly.wind_direction_100m?.[hourIndex] ?? dir10;
-
-        profile.push({ altitude: 10, speed: spd10, direction: dir10 });
-        profile.push({ altitude: 100, speed: spd100, direction: dir100 });
-
-        // Power-law extrapolation to higher altitudes.
-        // alpha is the wind shear exponent. Typical values:
-        //   0.10-0.15 for open terrain, 0.25-0.40 for urban areas.
-        // Clamped to [0.05, 0.4] to avoid unreasonable extrapolation.
-        const refSpeed = Math.max(spd100, spd10, 0.5);
-        const alpha = spd10 > 0.01 ? Math.log(spd100 / spd10) / Math.log(100 / 10) : 0.14;
-        const clampedAlpha = Math.max(0.05, Math.min(alpha, 0.4));
-
-        // Extrapolate at representative altitudes up to 16,000m.
-        // Wind direction is held constant (same as 100m) since the
-        // archive API provides no directional data at altitude.
-        const alts = [250, 500, 1000, 1500, 2000, 3000, 5000, 8000, 12000, 16000];
-        for (const alt of alts) {
-            const speed = refSpeed * Math.pow(alt / 100, clampedAlpha);
-            profile.push({ altitude: alt, speed, direction: dir100 });
-        }
-
-        profile.sort((a, b) => a.altitude - b.altitude);
-        return profile;
-    }
-
-    // Forecast path: extract wind data at each pressure level.
-    for (const p of PRESSURE_LEVELS) {
-        const speed = data.hourly[`wind_speed_${p}hPa`]?.[hourIndex];
-        const dir = data.hourly[`wind_direction_${p}hPa`]?.[hourIndex];
-        const geoAlt = data.hourly[`geopotential_height_${p}hPa`]?.[hourIndex];
-        if (speed == null || dir == null) continue;
-        // Use geopotential height if available, otherwise fall back to ISA.
-        const alt = geoAlt != null ? geoAlt : FALLBACK_ALTITUDES[p];
-        profile.push({ altitude: alt, speed, direction: dir });
-    }
-    profile.sort((a, b) => a.altitude - b.altitude);
-    return profile;
-}
-
-// Returns interpolated wind speed and direction at an arbitrary altitude
-// by linearly interpolating between the two nearest profile layers.
-// Below the lowest layer, returns the lowest layer's values.
-// Above the highest layer, returns the highest layer's values.
-// Direction interpolation handles the 0/360 wrap-around correctly.
-function interpolateWind(profile, alt) {
-    if (profile.length === 0) return { speed: 0, direction: 0 };
-    if (alt <= profile[0].altitude) return { speed: profile[0].speed, direction: profile[0].direction };
-    if (alt >= profile[profile.length - 1].altitude) {
-        const top = profile[profile.length - 1];
-        return { speed: top.speed, direction: top.direction };
-    }
-    for (let i = 0; i < profile.length - 1; i++) {
-        if (alt >= profile[i].altitude && alt <= profile[i + 1].altitude) {
-            // Linear interpolation factor (0 = lower layer, 1 = upper layer)
-            const t = (alt - profile[i].altitude) / (profile[i + 1].altitude - profile[i].altitude);
-            const speed = profile[i].speed + t * (profile[i + 1].speed - profile[i].speed);
-            // Direction wrap-around: if the difference exceeds 180 degrees,
-            // adjust so interpolation takes the shorter arc.
-            let d1 = profile[i].direction;
-            let d2 = profile[i + 1].direction;
-            let diff = d2 - d1;
-            if (diff > 180) diff -= 360;
-            if (diff < -180) diff += 360;
-            const direction = ((d1 + t * diff) % 360 + 360) % 360;
-            return { speed, direction };
-        }
-    }
-    return { speed: 0, direction: 0 };
-}
-
-// ============================================================
-// DRIFT CALCULATION (Numerical Integration)
-// ============================================================
-
-// Simulates the rocket's descent from apogee to ground, accumulating
-// horizontal displacement caused by wind at each altitude step.
-//
-// Parameters (all in metric):
-//   profile      -- wind profile array from buildWindProfile
-//   apogee       -- deployment altitude in meters AGL
-//   transitionAlt -- altitude (m) where drogue switches to main chute
-//                    (0 for single deploy)
-//   dr1          -- descent rate (m/s) on drogue / single chute
-//   dr2          -- descent rate (m/s) on main chute
-//   launchLat/Lon -- launch site coordinates in decimal degrees
-//
-// Returns an object with:
-//   landingLat/Lon -- predicted landing coordinates
-//   totalTime      -- total descent time in seconds
-//   driftDistance   -- straight-line distance from launch to landing (m)
-//   driftBearing   -- compass bearing from launch to landing (degrees)
-//   path           -- array of [lat, lon] points for drawing the drift path
-//   dx, dy         -- total east-west and north-south displacement (m)
-function calculateDrift(profile, apogee, transitionAlt, dr1, dr2, launchLat, launchLon) {
-    let dx = 0, dy = 0;
-    let totalTime = 0;
-    const path = [[launchLat, launchLon]];
-    // Clamp to max altitude as a safety measure (form validation should
-    // already prevent this, but defense in depth).
-    let currentAlt = Math.min(apogee, MAX_ALTITUDE_M);
-
-    while (currentAlt > 0) {
-        // Use a smaller step if we're close to the ground to avoid
-        // overshooting below zero.
-        const step = Math.min(ALT_STEP, currentAlt);
-
-        // Sample wind at the midpoint of this altitude step for better accuracy.
-        const midAlt = currentAlt - step / 2;
-
-        // Select the appropriate descent rate based on current altitude
-        // relative to the main chute deployment altitude.
-        const descentRate = currentAlt > transitionAlt ? dr1 : dr2;
-
-        // Time to descend through this altitude step.
-        const dt = step / descentRate;
-        totalTime += dt;
-
-        const wind = interpolateWind(profile, midAlt);
-
-        // Wind direction is meteorological (where wind comes FROM).
-        // Add 180 degrees to get the direction of travel (where the rocket
-        // is pushed TO).
-        const dirRad = (wind.direction + 180) * DEG_TO_RAD;
-
-        // Accumulate horizontal displacement.
-        // sin(dir) gives east-west component, cos(dir) gives north-south.
-        dx += wind.speed * Math.sin(dirRad) * dt;
-        dy += wind.speed * Math.cos(dirRad) * dt;
-
-        currentAlt -= step;
-
-        // Record the current position for the drift path polyline.
-        const dlat = dy / METERS_PER_DEG_LAT;
-        const dlon = dx / (METERS_PER_DEG_LAT * Math.cos(launchLat * DEG_TO_RAD));
-        path.push([launchLat + dlat, launchLon + dlon]);
-    }
-
-    // Final landing position.
-    const dlat = dy / METERS_PER_DEG_LAT;
-    const dlon = dx / (METERS_PER_DEG_LAT * Math.cos(launchLat * DEG_TO_RAD));
-    const landingLat = launchLat + dlat;
-    const landingLon = launchLon + dlon;
-    const driftDistance = Math.sqrt(dx * dx + dy * dy);
-    const driftBearing = ((Math.atan2(dx, dy) * 180 / Math.PI) + 360) % 360;
-
-    return { landingLat, landingLon, totalTime, driftDistance, driftBearing, path, dx, dy };
-}
-
-// ============================================================
-// DISPERSION ZONE CALCULATION
-// ============================================================
-
-// Runs multiple drift simulations with perturbed parameters to estimate
-// the range of possible landing locations (dispersion zone).
-//
-// Perturbation strategy:
-//   - 6 consecutive forecast hours (captures temporal wind variation)
-//   - 3 wind speed factors: 0.8x, 1.0x, 1.2x
-//   - 3 direction offsets: -15, 0, +15 degrees
-//   - 3 descent rate factors: 0.9x, 1.0x, 1.1x
-//
-// Total scenarios: 6 hours * 3 speeds * 3 dirs * 3 rates = 162
-//
-// The unperturbed result (speed=1.0, dir=0, rate=1.0, closest hour)
-// is saved as the primary prediction shown on the map.
-function calculateDispersion(apiData, apogee, transitionAlt, dr1, dr2, lat, lon, launchTime) {
-    const landingPoints = [];
-
-    // Find the hour index in the API response closest to the planned launch time.
-    const target = launchTime || new Date();
-    const times = apiData.hourly.time.map(t => new Date(t));
-    let baseIdx = 0;
-    let minDiff = Infinity;
-    for (let i = 0; i < times.length; i++) {
-        const diff = Math.abs(times[i] - target);
-        if (diff < minDiff) { minDiff = diff; baseIdx = i; }
-    }
-
-    // Use the closest hour plus the next 5 hours.
-    const hourIndices = [];
-    for (let h = 0; h < 6 && baseIdx + h < times.length; h++) {
-        hourIndices.push(baseIdx + h);
-    }
-
-    // Perturbation factors for Monte Carlo-style dispersion estimation.
-    const speedFactors = [0.8, 1.0, 1.2];
-    const dirOffsets = [-15, 0, 15];
-    const drFactors = [0.9, 1.0, 1.1];
-
-    let primaryResult = null;
-    let primaryProfile = null;
-
-    for (const hi of hourIndices) {
-        const profile = buildWindProfile(apiData, hi);
-        for (const sf of speedFactors) {
-            for (const dOff of dirOffsets) {
-                for (const drf of drFactors) {
-                    // Create a perturbed copy of the wind profile.
-                    const perturbedProfile = profile.map(p => ({
-                        altitude: p.altitude,
-                        speed: p.speed * sf,
-                        direction: (p.direction + dOff + 360) % 360
-                    }));
-                    const result = calculateDrift(perturbedProfile, apogee, transitionAlt, dr1 * drf, dr2 * drf, lat, lon);
-                    landingPoints.push({ lat: result.landingLat, lon: result.landingLon });
-
-                    // The unperturbed, closest-hour result is the primary prediction.
-                    if (hi === baseIdx && sf === 1.0 && dOff === 0 && drf === 1.0) {
-                        primaryResult = result;
-                        primaryProfile = profile;
-                    }
-                }
-            }
-        }
-    }
-
-    // Fit a 95% confidence ellipse to all landing points.
-    const ellipse = fitEllipse(landingPoints, lat);
-    const forecastTime = times[baseIdx];
-    return { primaryResult, primaryProfile, ellipse, landingPoints, forecastTime, apogee };
-}
-
-// Fits a 2-sigma (95% confidence) ellipse to a set of landing points
-// using principal component analysis (eigendecomposition of the 2x2
-// covariance matrix).
-//
-// Returns: { centerLat, centerLon, semiMajor, semiMinor, rotation }
-//   semiMajor/Minor are in meters, rotation is in degrees.
-function fitEllipse(points, refLat) {
-    const n = points.length;
-    if (n < 3) return null;
-
-    // Compute the centroid (mean) of all landing points.
-    const meanLat = points.reduce((s, p) => s + p.lat, 0) / n;
-    const meanLon = points.reduce((s, p) => s + p.lon, 0) / n;
-
-    // Convert lat/lon offsets to meters relative to the centroid.
-    const cosLat = Math.cos(meanLat * DEG_TO_RAD);
-    const xs = points.map(p => (p.lon - meanLon) * METERS_PER_DEG_LAT * cosLat);
-    const ys = points.map(p => (p.lat - meanLat) * METERS_PER_DEG_LAT);
-
-    // Build the 2x2 covariance matrix [cxx, cxy; cxy, cyy].
-    let cxx = 0, cyy = 0, cxy = 0;
-    for (let i = 0; i < n; i++) {
-        cxx += xs[i] * xs[i];
-        cyy += ys[i] * ys[i];
-        cxy += xs[i] * ys[i];
-    }
-    cxx /= n; cyy /= n; cxy /= n;
-
-    // Eigenvalues of a 2x2 symmetric matrix via the quadratic formula.
-    const trace = cxx + cyy;
-    const det = cxx * cyy - cxy * cxy;
-    const disc = Math.sqrt(Math.max(0, trace * trace / 4 - det));
-    const lambda1 = trace / 2 + disc;
-    const lambda2 = trace / 2 - disc;
-
-    // Scale by 2-sigma for 95% confidence interval.
-    const semiMajor = 2 * Math.sqrt(Math.max(0, lambda1));
-    const semiMinor = 2 * Math.sqrt(Math.max(0, lambda2));
-
-    // Rotation angle of the major axis (eigenvector direction).
-    const rotation = Math.atan2(cxy, lambda1 - cyy) * 180 / Math.PI;
-
-    return { centerLat: meanLat, centerLon: meanLon, semiMajor, semiMinor, rotation };
-}
-
-// Generates an array of [lat, lon] points forming an ellipse on the map.
-// Used to draw the dispersion zone as a Leaflet polygon.
-function createEllipsePoints(center, semiMajor, semiMinor, rotationDeg, numPoints = 72) {
-    const points = [];
-    const rot = rotationDeg * DEG_TO_RAD;
-    const cosLat = Math.cos(center[0] * DEG_TO_RAD);
-    for (let i = 0; i < numPoints; i++) {
-        const angle = (2 * Math.PI * i) / numPoints;
-        // Parametric ellipse in local meters.
-        const x = semiMajor * Math.cos(angle);
-        const y = semiMinor * Math.sin(angle);
-        // Rotate by the ellipse orientation angle.
-        const xr = x * Math.cos(rot) - y * Math.sin(rot);
-        const yr = x * Math.sin(rot) + y * Math.cos(rot);
-        // Convert back to lat/lon.
-        const lat = center[0] + yr / METERS_PER_DEG_LAT;
-        const lon = center[1] + xr / (METERS_PER_DEG_LAT * cosLat);
-        points.push([lat, lon]);
-    }
-    return points;
-}
+// Wind profile construction, interpolation, drift calculation,
+// dispersion, ellipse fitting, and utility functions are in calc.js.
 
 // ============================================================
 // RESULTS RENDERING
@@ -786,7 +442,7 @@ function renderResults(dispersion, lat, lon) {
     lastDispersion = dispersion;
     lastLaunchLat = lat;
     lastLaunchLon = lon;
-    const { primaryResult, primaryProfile, ellipse, forecastTime, apogee } = dispersion;
+    const { primaryResult, primaryProfile, primaryAscentPath, ellipse, forecastTime, apogee } = dispersion;
 
     // Clear previous overlays (markers, paths, ellipse).
     mapLayers.clearLayers();
@@ -817,24 +473,21 @@ function renderResults(dispersion, lat, lon) {
         }).addTo(mapLayers);
     }
 
-    // Ascent path from OpenRocket simulation data (if available).
-    if (orkFlightData && orkFlightData.ascentProfile && primaryProfile) {
-        const ascentPath = calculateAscentDrift(orkFlightData.ascentProfile, primaryProfile, lat, lon);
-        if (ascentPath.length > 1) {
-            L.polyline(ascentPath, {
-                color: '#00d4ff', weight: 2, opacity: 0.5, dashArray: '4,6'
-            }).addTo(mapLayers);
+    // Ascent path from launch angle simulation or OpenRocket data (if available).
+    if (primaryAscentPath && primaryAscentPath.length > 1) {
+        L.polyline(primaryAscentPath, {
+            color: '#00d4ff', weight: 2, opacity: 0.5, dashArray: '4,6'
+        }).addTo(mapLayers);
 
-            // Apogee marker (orange dot at the top of the ascent path).
-            const apogeePoint = ascentPath[ascentPath.length - 1];
-            const apogeeIcon = L.divIcon({
-                html: '<div style="background:#ff8c42;width:10px;height:10px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 6px rgba(255,140,66,0.6)"></div>',
-                className: '', iconSize: [10, 10], iconAnchor: [5, 5]
-            });
-            L.marker(apogeePoint, { icon: apogeeIcon })
-                .bindPopup('<b>Apogee</b>')
-                .addTo(mapLayers);
-        }
+        // Apogee marker (orange dot at the top of the ascent path).
+        const apogeePoint = primaryAscentPath[primaryAscentPath.length - 1];
+        const apogeeIcon = L.divIcon({
+            html: '<div style="background:#ff8c42;width:10px;height:10px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 6px rgba(255,140,66,0.6)"></div>',
+            className: '', iconSize: [10, 10], iconAnchor: [5, 5]
+        });
+        L.marker(apogeePoint, { icon: apogeeIcon })
+            .bindPopup('<b>Apogee</b>')
+            .addTo(mapLayers);
     }
 
     // Auto-zoom the map to fit all overlays with some padding.
@@ -929,12 +582,6 @@ function renderResults(dispersion, lat, lon) {
 // UTILITIES
 // ============================================================
 
-// Converts a bearing (0-360 degrees) to an 8-point compass direction.
-function bearingToCompass(deg) {
-    const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
-    return dirs[Math.round(deg / 45) % 8];
-}
-
 // Shows a temporary notification at the bottom center of the screen.
 // Auto-removes after 3.5 seconds.
 function showToast(msg, type = 'info') {
@@ -981,12 +628,18 @@ form.addEventListener('submit', async (e) => {
         dr2 = dr1; // Single deploy: same descent rate the whole way down
     }
 
+    // Parse launch angle inputs (degrees, no unit conversion needed).
+    const launchAngle = parseFloat(launchAngleInput.value) || 0;
+    const launchAzimuth = parseFloat(launchAzimuthInput.value) || 0;
+    let ascentRate = parseFloat(ascentRateInput.value) || 0;
+
     // Convert user-entered imperial values to metric for internal calculations.
     if (useImperial) {
         apogee /= FT_PER_M;
         dr1 /= FPS_PER_MS;
         transition /= FT_PER_M;
         dr2 /= FPS_PER_MS;
+        if (ascentRate > 0) ascentRate /= FPS_PER_MS;
     }
 
     // Parse launch date and time from the form inputs.
@@ -1030,7 +683,9 @@ form.addEventListener('submit', async (e) => {
         if (isHistoricalData) {
             showToast('Historical date — using surface wind extrapolation (less accurate above 100m)', 'warning');
         }
-        const dispersion = calculateDispersion(apiData, apogee, transition, dr1, dr2, lat, lon, launchTime);
+        const orkProfile = orkFlightData ? orkFlightData.ascentProfile : null;
+        const dispersion = calculateDispersion(apiData, apogee, transition, dr1, dr2, lat, lon, launchTime, isHistoricalData,
+                                                launchAngle, launchAzimuth, ascentRate, orkProfile);
         renderResults(dispersion, lat, lon);
     } catch (err) {
         console.error('FindMyRocket error:', err);
@@ -1384,6 +1039,28 @@ function applyOrkData(orkData) {
         markAutoFilled(cdEl);
     }
 
+    // Auto-fill ascent rate from ORK simulation profile.
+    const ascentHint = $('ascent-rate-hint');
+    if (orkData.simulationData && orkData.simulationData.ascentProfile) {
+        const profile = orkData.simulationData.ascentProfile;
+        if (profile.length >= 2) {
+            const totalTime = profile[profile.length - 1].time - profile[0].time;
+            const totalAlt = profile[profile.length - 1].altitude - profile[0].altitude;
+            if (totalTime > 0 && totalAlt > 0) {
+                const avgRate = totalAlt / totalTime; // m/s
+                ascentRateInput.value = useImperial
+                    ? (avgRate * FPS_PER_MS).toFixed(1)
+                    : avgRate.toFixed(1);
+                markAutoFilled(ascentRateInput);
+            }
+        }
+        ascentHint.textContent = 'Using .ork simulation profile — variable thrust and coast phases included.';
+        ascentHint.classList.add('ork-active');
+    } else {
+        ascentHint.textContent = 'Average vertical speed to apogee. Import a .ork file for accurate per-step timing.';
+        ascentHint.classList.remove('ork-active');
+    }
+
     orkSummary.hidden = false;
 
     if (!orkData.simulationData) {
@@ -1399,19 +1076,15 @@ $('ork-clear-btn').addEventListener('click', () => {
     orkSummary.hidden = true;
     orkFlightData = null;
     clearAutoFilled();
+    const ascentHint = $('ascent-rate-hint');
+    ascentHint.textContent = 'Average vertical speed to apogee. Import a .ork file for accurate per-step timing.';
+    ascentHint.classList.remove('ork-active');
     showToast('Import cleared');
 });
 
 // ============================================================
 // DESCENT RATE CALCULATOR
 // ============================================================
-
-const AIR_DENSITY_SEA_LEVEL = 1.225;
-
-function calcDescentRateFromParams(massKg, diameterM, cd) {
-    const area = Math.PI * Math.pow(diameterM / 2, 2);
-    return Math.sqrt((2 * massKg * 9.81) / (AIR_DENSITY_SEA_LEVEL * cd * area));
-}
 
 // Computes the descent rate and applies it to the appropriate field.
 function computeAndApplyDR(targetField) {
@@ -1463,33 +1136,26 @@ modeSingleBtn.addEventListener('click', updateCalcButtons);
 modeDualBtn.addEventListener('click', updateCalcButtons);
 
 // ============================================================
-// ASCENT PATH VISUALIZATION
+// AZIMUTH COMPASS INDICATOR
 // ============================================================
 
-// Calculates the wind-affected ascent path using OpenRocket simulation
-// data (altitude vs time) combined with live wind profile data.
-function calculateAscentDrift(ascentProfile, windProfile, launchLat, launchLon) {
-    const path = [[launchLat, launchLon]];
-    let dx = 0, dy = 0;
+// Rotates the compass arrow to match the azimuth input in real-time.
+const azimuthArrow = $('azimuth-arrow');
+const azimuthCompass = $('azimuth-compass');
 
-    for (let i = 1; i < ascentProfile.length; i++) {
-        const dt = ascentProfile[i].time - ascentProfile[i - 1].time;
-        if (dt <= 0) continue;
-
-        const midAlt = (ascentProfile[i].altitude + ascentProfile[i - 1].altitude) / 2;
-        const wind = interpolateWind(windProfile, midAlt);
-
-        const dirRad = (wind.direction + 180) * DEG_TO_RAD;
-        dx += wind.speed * Math.sin(dirRad) * dt;
-        dy += wind.speed * Math.cos(dirRad) * dt;
-
-        const dlat = dy / METERS_PER_DEG_LAT;
-        const dlon = dx / (METERS_PER_DEG_LAT * Math.cos(launchLat * DEG_TO_RAD));
-        path.push([launchLat + dlat, launchLon + dlon]);
+function updateAzimuthCompass() {
+    const val = parseFloat(launchAzimuthInput.value);
+    if (!isNaN(val)) {
+        azimuthArrow.setAttribute('transform', `rotate(${val} 18 18)`);
+        azimuthCompass.classList.add('active');
+    } else {
+        azimuthArrow.setAttribute('transform', 'rotate(0 18 18)');
+        azimuthCompass.classList.remove('active');
     }
-
-    return path;
 }
+
+launchAzimuthInput.addEventListener('input', updateAzimuthCompass);
+updateAzimuthCompass();
 
 // ============================================================
 // MAP CAPTURE (for Export)
