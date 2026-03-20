@@ -104,6 +104,7 @@ header h1 {
 }
 
 .session-btn svg { flex-shrink: 0; }
+a.session-btn { text-decoration: none; }
 
 /* ===== Unit Toggle (Metric/Imperial) ===== */
 /* Button group pushed to the right side of the header */
