@@ -160,7 +160,8 @@ function setDateTimeToNow() {
         h = h % 12 || 12;
     }
     launchHourSelect.value = h;
-    launchMinSelect.value = now.getMinutes();
+    // Floor to current 15-minute slot (matches dropdown options 0/15/30/45)
+    launchMinSelect.value = Math.floor(now.getMinutes() / 15) * 15;
 }
 setDateTimeToNow();
 
@@ -202,14 +203,23 @@ timeFormatLabel.addEventListener('click', () => {
 // ============================================================
 
 // Default view centered on Mojave Desert area (common rocketry launch site).
-const map = L.map('map').setView([35.35, -117.81], 12);
+// minZoom + maxBounds prevent the user from zooming/panning into a
+// repeating world (the "infinite earths" effect at low zoom).
+const map = L.map('map', {
+    minZoom: 2,
+    maxBounds: [[-85, -180], [85, 180]],
+    maxBoundsViscosity: 1.0,
+    worldCopyJump: false,
+}).setView([35.35, -117.81], 12);
 
 // Street tile layer from OpenStreetMap.
 // crossOrigin: 'anonymous' is required for the map capture feature
 // to draw tile images onto a canvas without tainting it.
+// noWrap stops tiles from repeating horizontally past the antimeridian.
 const streetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; <a href="https://openstreetmap.org/copyright">OpenStreetMap</a>',
     maxZoom: 19,
+    noWrap: true,
     crossOrigin: 'anonymous'
 });
 
@@ -217,6 +227,7 @@ const streetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.
 const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
     attribution: '&copy; Esri, Maxar, Earthstar Geographics',
     maxZoom: 19,
+    noWrap: true,
     crossOrigin: 'anonymous'
 });
 
@@ -229,10 +240,39 @@ L.control.layers({ 'Street': streetLayer, 'Satellite': satelliteLayer }, null, {
 // Cleared and rebuilt on each new calculation.
 let mapLayers = L.layerGroup().addTo(map);
 
-// Small colored dot icons for the launch (orange) and landing (cyan) markers.
+// Map legend control (bottom-left). Built lazily after icon helpers are
+// declared below — see initMapLegend(), called at end of init.
+let mapLegendControl = null;
+
+// Inline SVG glyphs for the trajectory waypoints. Each icon is rendered
+// inside an L.divIcon so Leaflet positions them; the export pipeline
+// detects the inner <svg> and rasterizes it onto the canvas.
+const LAUNCH_COLOR = '#ff4c29';
+function launchIconSvg(color = LAUNCH_COLOR, size = 18) {
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 42" width="${size}" height="${size * 42 / 30}" style="filter:drop-shadow(0 0 4px ${color}aa)">
+        <path d="M15 1C7.3 1 1 7.3 1 15c0 9.5 14 26 14 26s14-16.5 14-26C29 7.3 22.7 1 15 1z" fill="${color}" stroke="#fff" stroke-width="2"/>
+        <circle cx="15" cy="14" r="5" fill="#fff"/>
+    </svg>`;
+}
+function apogeeIconSvg(color, size = 18) {
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" width="${size}" height="${size}" style="filter:drop-shadow(0 0 4px ${color}aa)">
+        <polygon points="10,1 19,18 1,18" fill="${color}" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>
+    </svg>`;
+}
+function landingIconSvg(color, size = 20) {
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="${size}" height="${size}" style="filter:drop-shadow(0 0 4px ${color}aa)">
+        <path d="M2 11 C2 5, 22 5, 22 11" fill="${color}" stroke="#fff" stroke-width="1.5"/>
+        <line x1="2"  y1="11" x2="12" y2="20" stroke="#fff" stroke-width="1.5"/>
+        <line x1="8"  y1="11" x2="12" y2="20" stroke="#fff" stroke-width="1.5"/>
+        <line x1="16" y1="11" x2="12" y2="20" stroke="#fff" stroke-width="1.5"/>
+        <line x1="22" y1="11" x2="12" y2="20" stroke="#fff" stroke-width="1.5"/>
+        <circle cx="12" cy="20" r="2" fill="${color}" stroke="#fff" stroke-width="1.5"/>
+    </svg>`;
+}
+
 const launchIcon = L.divIcon({
-    html: '<div style="background:#ff4c29;width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 8px rgba(255,76,41,0.6)"></div>',
-    className: '', iconSize: [14, 14], iconAnchor: [7, 7]
+    html: launchIconSvg(),
+    className: 'fmr-marker fmr-launch', iconSize: [18, 25], iconAnchor: [9, 25]
 });
 // landingIcon replaced by makeLandingIcon(color) for per-scenario colors.
 
@@ -256,6 +296,51 @@ launchPin.on('dragend', () => {
     const pos = launchPin.getLatLng();
     setCoords(pos.lat, pos.lng);
 });
+
+// Builds the legend HTML (also reused by the export report).
+function buildLegendHtml() {
+    const swatch = (svg, label) =>
+        `<div class="legend-row"><span class="legend-icon">${svg}</span><span class="legend-label">${label}</span></div>`;
+    const lineSwatch = (style, label) =>
+        `<div class="legend-row"><span class="legend-line" style="${style}"></span><span class="legend-label">${label}</span></div>`;
+    const sampleColor = '#4dd2ff';
+    return `
+        <div class="legend-header">
+            <span>Map Legend</span>
+            <button class="legend-toggle" type="button" title="Collapse">&minus;</button>
+        </div>
+        <div class="legend-body">
+            ${swatch(launchIconSvg(LAUNCH_COLOR, 14), 'Launch')}
+            ${swatch(apogeeIconSvg(sampleColor, 14), 'Apogee')}
+            ${swatch(landingIconSvg(sampleColor, 16), 'Landing')}
+            ${lineSwatch('background:repeating-linear-gradient(to right, ' + sampleColor + ' 0 6px, transparent 6px 10px); height:2px;', 'Drift / Descent')}
+            ${lineSwatch('background:repeating-linear-gradient(to right, ' + sampleColor + ' 0 2px, transparent 2px 10px); height:3px;', 'Ascent')}
+            ${lineSwatch('border:1px dashed ' + sampleColor + '; height:0;', 'Dispersion zone')}
+        </div>`;
+}
+
+function initMapLegend() {
+    const ctrl = L.control({ position: 'bottomleft' });
+    ctrl.onAdd = () => {
+        const div = L.DomUtil.create('div', 'map-legend');
+        div.innerHTML = buildLegendHtml();
+        // Stop map drag/click from firing inside the legend.
+        L.DomEvent.disableClickPropagation(div);
+        L.DomEvent.disableScrollPropagation(div);
+        // Collapse/expand toggle.
+        div.addEventListener('click', (e) => {
+            const btn = e.target.closest('.legend-toggle');
+            if (!btn) return;
+            const collapsed = div.classList.toggle('collapsed');
+            btn.textContent = collapsed ? '+' : '−';
+            btn.title = collapsed ? 'Expand' : 'Collapse';
+        });
+        return div;
+    };
+    ctrl.addTo(map);
+    mapLegendControl = ctrl;
+}
+initMapLegend();
 
 // Moves the pin to a new position. Adds the pin to the map on first call.
 function updatePinPosition(lat, lon) {
@@ -556,17 +641,29 @@ updateDiaToggleable();
 const ALTITUDE_FIELDS = new Set(['apogee', 'apogeeDual', 'transition']);
 
 function attachInputClamp(input, limKey) {
+    let lastClampToast = 0;
     input.addEventListener('input', () => {
         const val = parseFloat(input.value);
         if (isNaN(val)) return;
 
         // Altitude fields use the unit-aware max.
         let lim = INPUT_LIMITS[limKey];
+        let unitSuffix = '';
         if (ALTITUDE_FIELDS.has(limKey)) {
             lim = { ...lim, max: useImperial ? MAX_ALTITUDE_FT : MAX_ALTITUDE_M };
+            unitSuffix = useImperial ? ' ft' : ' m';
         }
         if (val > lim.max) {
             input.value = lim.max;
+            // Debounce: at most one clamp toast per 1.5s per input
+            const now = Date.now();
+            if (now - lastClampToast > 1500) {
+                lastClampToast = now;
+                showToast(
+                    `Capped at ${lim.max.toLocaleString()}${unitSuffix} — entered ${val.toLocaleString()}${unitSuffix} exceeds the maximum`,
+                    'warning'
+                );
+            }
         } else if (val < lim.min) {
             input.value = lim.min;
         }
@@ -667,8 +764,8 @@ let lastLaunchLon = null;
 // Creates a colored dot icon for landing markers.
 function makeLandingIcon(color) {
     return L.divIcon({
-        html: `<div style="background:${color};width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 8px ${color}99"></div>`,
-        className: '', iconSize: [14, 14], iconAnchor: [7, 7]
+        html: landingIconSvg(color),
+        className: 'fmr-marker fmr-landing', iconSize: [20, 20], iconAnchor: [10, 20]
     });
 }
 
@@ -684,6 +781,7 @@ function renderMapOverlays(dispersion, color, layerGroup) {
 
     // Landing marker with scenario color.
     L.marker([primaryResult.landingLat, primaryResult.landingLon], { icon: makeLandingIcon(color) })
+        .bindTooltip('Landing', { permanent: true, direction: 'top', offset: [0, -10], className: 'fmr-marker-label' })
         .bindPopup('<b>Predicted Landing</b>')
         .addTo(layerGroup);
 
@@ -703,15 +801,36 @@ function renderMapOverlays(dispersion, color, layerGroup) {
     // Ascent path (if available).
     if (primaryAscentPath && primaryAscentPath.length > 1) {
         L.polyline(primaryAscentPath, {
-            color, weight: 2, opacity: 0.5, dashArray: '4,6'
+            color, weight: 3, opacity: 0.85, dashArray: '2,8'
         }).addTo(layerGroup);
+
+        // Directional chevrons at 25/50/75% along the path so the upward
+        // direction is unambiguous on the map.
+        const chevronFractions = [0.25, 0.5, 0.75];
+        for (const f of chevronFractions) {
+            const idx = Math.max(1, Math.min(primaryAscentPath.length - 1, Math.floor(primaryAscentPath.length * f)));
+            const here = primaryAscentPath[idx];
+            const prev = primaryAscentPath[idx - 1];
+            // atan2(lon_delta, lat_delta) returns a compass bearing
+            // (0=N, 90=E). The upward-pointing SVG chevron is rotated
+            // clockwise by that bearing to point in the direction of travel.
+            const bearing = Math.atan2(here[1] - prev[1], here[0] - prev[0]) * 180 / Math.PI;
+            const chevronIcon = L.divIcon({
+                html: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" width="12" height="12" style="transform:rotate(${bearing}deg);filter:drop-shadow(0 0 3px ${color}aa)">
+                    <path d="M2 9 L6 3 L10 9" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>`,
+                className: 'fmr-marker fmr-chevron', iconSize: [12, 12], iconAnchor: [6, 6],
+            });
+            L.marker(here, { icon: chevronIcon, interactive: false }).addTo(layerGroup);
+        }
 
         const apogeePoint = primaryAscentPath[primaryAscentPath.length - 1];
         const apogeeIcon = L.divIcon({
-            html: `<div style="background:${color};width:10px;height:10px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 6px ${color}99"></div>`,
-            className: '', iconSize: [10, 10], iconAnchor: [5, 5]
+            html: apogeeIconSvg(color),
+            className: 'fmr-marker fmr-apogee', iconSize: [18, 18], iconAnchor: [9, 9]
         });
         L.marker(apogeePoint, { icon: apogeeIcon })
+            .bindTooltip('Apogee', { permanent: true, direction: 'top', offset: [0, -8], className: 'fmr-marker-label' })
             .bindPopup('<b>Apogee</b>')
             .addTo(layerGroup);
     }
@@ -797,6 +916,7 @@ function renderAllScenarios() {
     const lon = lastLaunchLon;
     if (lat == null || lon == null) return;
     L.marker([lat, lon], { icon: launchIcon })
+        .bindTooltip('Launch', { permanent: true, direction: 'top', offset: [0, -22], className: 'fmr-marker-label' })
         .bindPopup('<b>Launch Site</b>')
         .addTo(mapLayers);
 
@@ -920,6 +1040,15 @@ async function pinScenario() {
         launchLat: lastLaunchLat,
         launchLon: lastLaunchLon,
         mapLayerGroup: L.layerGroup(),
+        // Snapshot of inputs/UI state so the scenario can be re-loaded for editing.
+        formInputs: getCurrentFormInputs(),
+        uiState: {
+            useImperial,
+            massSmallUnit,
+            diaSmallUnit,
+            use24h,
+            dualDeploy,
+        },
     };
 
     scenarios.push(scenario);
@@ -969,9 +1098,64 @@ function selectScenario(index) {
     renderScenarioBar();
 }
 
+// Loads a scenario's saved inputs back into the form so the user can
+// tweak values and re-run the calculation. Older scenarios pinned before
+// input snapshotting was added won't have formInputs.
+function editScenario(id) {
+    const s = scenarios.find(x => x.id === id);
+    if (!s) return;
+    if (!s.formInputs) {
+        showToast('This scenario was pinned before input editing was supported', 'warning');
+        return;
+    }
+
+    // Restore unit/format toggles before applying values, so values land in the right unit.
+    const ui = s.uiState || {};
+    if (ui.useImperial != null && ui.useImperial !== useImperial) {
+        (ui.useImperial ? imperialBtn : metricBtn).click();
+    }
+    if (ui.use24h != null && ui.use24h !== use24h) {
+        timeFormatLabel.click();
+    }
+    // Deploy mode toggle (its click handler is a no-op when already in target state).
+    const wantDual = !!ui.dualDeploy;
+    if (wantDual && !dualDeploy) modeDualBtn.click();
+    else if (!wantDual && dualDeploy) modeSingleBtn.click();
+
+    applyFormInputs(s.formInputs);
+
+    // Restore the launch pin and azimuth compass.
+    if (s.launchLat != null && s.launchLon != null) {
+        updatePinPosition(s.launchLat, s.launchLon);
+    }
+    const azVal = parseFloat(s.formInputs.launchAzimuth);
+    if (!isNaN(azVal)) {
+        const compass = $('azimuth-compass');
+        if (compass) compass.style.transform = `rotate(${azVal}deg)`;
+    }
+
+    // Bring the calculate button into view so the next action is obvious.
+    const calcBtn = $('calc-btn');
+    if (calcBtn) calcBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    showToast(`Loaded "${s.name}" inputs — click Calculate to re-run`, 'info');
+    dismissScenarioHint();
+}
+
 // Eye icon SVGs.
 const EYE_OPEN_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
 const EYE_CLOSED_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+const PENCIL_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>';
+
+// One-time hint shown above the scenario bar to teach chip controls.
+const SCENARIO_HINT_KEY = 'scenarioHintDismissed';
+function dismissScenarioHint() {
+    try { localStorage.setItem(SCENARIO_HINT_KEY, '1'); } catch (e) { /* ignore */ }
+    renderScenarioBar();
+}
+function isScenarioHintDismissed() {
+    try { return localStorage.getItem(SCENARIO_HINT_KEY) === '1'; } catch (e) { return false; }
+}
 
 // Renders the scenario bar with chips.
 function renderScenarioBar() {
@@ -981,6 +1165,15 @@ function renderScenarioBar() {
     }
     scenarioBar.hidden = false;
     scenarioBar.innerHTML = '';
+
+    // One-time discoverability hint above the chips.
+    if (!isScenarioHintDismissed()) {
+        const hint = document.createElement('div');
+        hint.className = 'scenario-hint';
+        hint.innerHTML = 'Click a chip to view results · <span class="hint-icon">✎</span> edit inputs · <span class="hint-icon">👁</span> toggle on map <button class="hint-dismiss" title="Dismiss">&times;</button>';
+        hint.querySelector('.hint-dismiss').addEventListener('click', dismissScenarioHint);
+        scenarioBar.appendChild(hint);
+    }
 
     // "Current" chip
     const currentChip = document.createElement('div');
@@ -1009,20 +1202,29 @@ function renderScenarioBar() {
         chip.innerHTML = `
             <span class="scenario-dot" style="background:${s.color}"></span>
             <span class="scenario-name">${s.name}</span>
+            <button class="edit-btn" title="Edit inputs (load into form)">${PENCIL_SVG}</button>
             <button class="eye-btn" title="${s.visible ? 'Hide' : 'Show'} on map">${s.visible ? EYE_OPEN_SVG : EYE_CLOSED_SVG}</button>
             <button class="remove-btn" title="Remove">&times;</button>
         `;
 
         // Click chip body to select.
         chip.addEventListener('click', (e) => {
-            if (e.target.closest('.eye-btn') || e.target.closest('.remove-btn')) return;
+            if (e.target.closest('.edit-btn') || e.target.closest('.eye-btn') || e.target.closest('.remove-btn')) return;
             selectScenario(i);
+            dismissScenarioHint();
+        });
+
+        // Edit (load inputs into form).
+        chip.querySelector('.edit-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            editScenario(s.id);
         });
 
         // Eye toggle.
         chip.querySelector('.eye-btn').addEventListener('click', (e) => {
             e.stopPropagation();
             toggleScenarioVisibility(s.id);
+            dismissScenarioHint();
         });
 
         // Remove button.
@@ -1201,7 +1403,10 @@ form.addEventListener('submit', async (e) => {
     if (isNaN(apogee) || apogee <= 0) return showError('Deployment altitude must be a positive number');
     if (apogee > MAX_ALTITUDE_M) {
         const maxDisp = useImperial ? `${MAX_ALTITUDE_FT.toLocaleString()} ft` : `${MAX_ALTITUDE_M.toLocaleString()} m`;
-        return showError(`Altitude exceeds maximum of ${maxDisp} — limited by available wind data`);
+        const enteredDisp = useImperial
+            ? `${Math.round(apogee * FT_PER_M).toLocaleString()} ft`
+            : `${Math.round(apogee).toLocaleString()} m`;
+        return showError(`Altitude ${enteredDisp} exceeds the maximum of ${maxDisp} — limited by available wind data`);
     }
     if (isNaN(dr1) || dr1 <= 0) return showError('Descent rate must be positive');
     if (dualDeploy) {
@@ -1891,6 +2096,14 @@ async function captureMapCanvas() {
     const ctx = canvas.getContext('2d');
     ctx.scale(2, 2);
 
+    // Hide the draggable launch pin — its SVG would render twice on top of
+    // the small launch marker. The small marker alone represents the launch
+    // location in the export. Restored in finally below.
+    const pinEl = launchPin && launchPin._icon;
+    const prevPinDisplay = pinEl ? pinEl.style.display : null;
+    if (pinEl) pinEl.style.display = 'none';
+    try {
+
     // The map pane itself has a translate3d offset that all child
     // elements are positioned relative to. We need to apply this
     // offset when drawing each child onto the canvas.
@@ -1940,29 +2153,79 @@ async function captureMapCanvas() {
         });
     }
 
-    // --- Draw markers as circles ---
-    // Leaflet markers are div-based icons. We find each one's position
-    // and draw a colored circle to represent it on the canvas.
+    // --- Draw markers ---
+    // Each marker icon is either an inline <svg> (the new typed icons) or
+    // a styled colored <div> (legacy / arrow chevrons). For SVGs we serialize
+    // and rasterize via Image; for divs we draw a circle.
     const markerPane = mapEl.querySelector('.leaflet-marker-pane');
     if (markerPane) {
+        const markerJobs = [];
         markerPane.querySelectorAll('.leaflet-marker-icon').forEach(marker => {
+            // Skip the draggable launch pin — the small launchIcon already
+            // represents the launch site. Without this, both render together.
+            if (marker === pinEl) return;
             const [mx, my] = parseTranslate3d(marker);
-            const dot = marker.querySelector('div[style]');
-            if (dot) {
-                const bg = dot.style.background || dot.style.backgroundColor || '#ff4c29';
-                const w = parseFloat(dot.style.width) || 14;
-                ctx.beginPath();
-                ctx.arc(px + mx + w / 2, py + my + w / 2, w / 2, 0, Math.PI * 2);
-                ctx.fillStyle = bg;
-                ctx.fill();
-                ctx.strokeStyle = '#fff';
-                ctx.lineWidth = 2;
-                ctx.stroke();
+            const svg = marker.querySelector('svg');
+            if (svg) {
+                const w = parseFloat(svg.getAttribute('width')) || marker.offsetWidth || 18;
+                const h = parseFloat(svg.getAttribute('height')) || marker.offsetHeight || w;
+                const svgData = new XMLSerializer().serializeToString(svg);
+                const blob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                markerJobs.push(new Promise(resolve => {
+                    const img = new Image();
+                    img.onload = () => {
+                        ctx.drawImage(img, px + mx, py + my, w, h);
+                        URL.revokeObjectURL(url);
+                        resolve();
+                    };
+                    img.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+                    img.src = url;
+                }));
+            } else {
+                const dot = marker.querySelector('div[style]');
+                if (dot) {
+                    const bg = dot.style.background || dot.style.backgroundColor || '#ff4c29';
+                    const w = parseFloat(dot.style.width) || 14;
+                    ctx.beginPath();
+                    ctx.arc(px + mx + w / 2, py + my + w / 2, w / 2, 0, Math.PI * 2);
+                    ctx.fillStyle = bg;
+                    ctx.fill();
+                    ctx.strokeStyle = '#fff';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                }
             }
+        });
+        await Promise.all(markerJobs);
+    }
+
+    // --- Draw permanent tooltips (Launch / Apogee / Landing labels) ---
+    const tooltipPane = mapEl.querySelector('.leaflet-tooltip-pane');
+    if (tooltipPane) {
+        tooltipPane.querySelectorAll('.leaflet-tooltip').forEach(tip => {
+            const [tx, ty] = parseTranslate3d(tip);
+            const text = tip.textContent || '';
+            if (!text) return;
+            ctx.font = '600 11px system-ui, -apple-system, sans-serif';
+            const padX = 6, padY = 2;
+            const metrics = ctx.measureText(text);
+            const w = Math.ceil(metrics.width) + padX * 2;
+            const h = 16;
+            ctx.fillStyle = 'rgba(15,15,20,0.78)';
+            ctx.beginPath();
+            ctx.roundRect ? ctx.roundRect(px + tx, py + ty, w, h, 4) : ctx.rect(px + tx, py + ty, w, h);
+            ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, px + tx + padX, py + ty + h / 2 + 1);
         });
     }
 
     return canvas.toDataURL('image/png');
+    } finally {
+        if (pinEl) pinEl.style.display = prevPinDisplay || '';
+    }
 }
 
 // ============================================================
@@ -2177,6 +2440,7 @@ exportGo.addEventListener('click', async () => {
         <span class="date">${reportDate}</span>
     </div>
     ${mapDataUrl ? `<img class="map-img" src="${mapDataUrl}" alt="Map">` : ''}
+    ${mapDataUrl ? buildExportLegendHtml() : ''}
     <div class="data-grid">${dataRows}</div>
     ${comparisonHtml}
     ${windTableHtml}
@@ -2199,6 +2463,30 @@ function reportRow(label, value) {
     return `<div class="data-item"><div class="data-label">${label}</div><div class="data-value">${value}</div></div>`;
 }
 
+// Inline-styled legend rendered into the export report alongside the map image.
+function buildExportLegendHtml() {
+    const sample = '#4dd2ff';
+    const cell = (icon, label) =>
+        `<div style="display:flex;align-items:center;gap:6px;font-size:11px;color:#e0e6f0">
+            <span style="display:inline-flex;width:18px;height:18px;align-items:center;justify-content:center">${icon}</span>
+            <span>${label}</span>
+        </div>`;
+    const lineCell = (style, label) =>
+        `<div style="display:flex;align-items:center;gap:6px;font-size:11px;color:#e0e6f0">
+            <span style="display:inline-block;width:22px;${style}"></span>
+            <span>${label}</span>
+        </div>`;
+    return `
+    <div style="display:flex;flex-wrap:wrap;gap:10px 16px;background:#1a2236;border:1px solid #2a3450;border-radius:8px;padding:8px 12px;margin-bottom:12px">
+        ${cell(launchIconSvg(LAUNCH_COLOR, 14), 'Launch')}
+        ${cell(apogeeIconSvg(sample, 14), 'Apogee')}
+        ${cell(landingIconSvg(sample, 16), 'Landing')}
+        ${lineCell('background:repeating-linear-gradient(to right,' + sample + ' 0 6px,transparent 6px 10px);height:2px;', 'Drift / Descent')}
+        ${lineCell('background:repeating-linear-gradient(to right,' + sample + ' 0 2px,transparent 2px 10px);height:3px;', 'Ascent')}
+        ${lineCell('border:1px dashed ' + sample + ';height:0;', 'Dispersion zone')}
+    </div>`;
+}
+
 // ============================================================
 // SESSION SAVE / LOAD (.fmr files)
 // ============================================================
@@ -2211,6 +2499,58 @@ const sessionFileInput = $('session-file-input');
 const sessionNameInput = $('session-name-input');
 
 // --- Serialization helpers ---
+
+// Snapshot of all form inputs + ancillary UI state. Used both by session
+// save/load and by the per-scenario "edit inputs" feature.
+function getCurrentFormInputs() {
+    return {
+        latitude: latInput.value,
+        longitude: lonInput.value,
+        locationSearch: $('location-search').value,
+        launchDate: launchDateInput.value,
+        launchHour: launchHourSelect.value,
+        launchMin: launchMinSelect.value,
+        launchAmpm: launchAmpmSelect.value,
+        apogee: apogeeInput.value,
+        dr1: dr1Input.value,
+        apogeeDual: $('apogee-dual').value,
+        dr1Dual: $('dr1-dual').value,
+        transition: transitionInput.value,
+        dr2: dr2Input.value,
+        launchAngle: launchAngleInput.value,
+        launchAzimuth: launchAzimuthInput.value,
+        ascentRate: ascentRateInput.value,
+        calcMass: $('calc-mass').value,
+        calcDiameter: $('calc-diameter').value,
+        calcCd: $('calc-cd').value,
+    };
+}
+
+// Restores form input values from a snapshot. Honors hard limits via
+// clampInput. Caller is responsible for restoring unit/dualDeploy state
+// before invoking this — values are stored in whatever unit was active.
+function applyFormInputs(fi) {
+    fi = fi || {};
+    latInput.value = clampInput('latitude', fi.latitude);
+    lonInput.value = clampInput('longitude', fi.longitude);
+    $('location-search').value = fi.locationSearch ?? '';
+    launchDateInput.value = fi.launchDate ?? '';
+    launchHourSelect.value = fi.launchHour ?? '';
+    launchMinSelect.value = fi.launchMin ?? '';
+    launchAmpmSelect.value = fi.launchAmpm ?? 'AM';
+    apogeeInput.value = clampInput('apogee', fi.apogee);
+    dr1Input.value = clampInput('dr1', fi.dr1);
+    $('apogee-dual').value = clampInput('apogeeDual', fi.apogeeDual);
+    $('dr1-dual').value = clampInput('dr1Dual', fi.dr1Dual);
+    transitionInput.value = clampInput('transition', fi.transition);
+    dr2Input.value = clampInput('dr2', fi.dr2);
+    launchAngleInput.value = clampInput('launchAngle', fi.launchAngle);
+    launchAzimuthInput.value = clampInput('launchAzimuth', fi.launchAzimuth);
+    ascentRateInput.value = clampInput('ascentRate', fi.ascentRate);
+    $('calc-mass').value = clampInput('calcMass', fi.calcMass);
+    $('calc-diameter').value = clampInput('calcDiameter', fi.calcDiameter);
+    $('calc-cd').value = clampInput('calcCd', fi.calcCd);
+}
 
 function serializeDispersion(disp) {
     if (!disp) return null;
@@ -2235,27 +2575,7 @@ function collectSessionState(sessionName) {
         savedAt: new Date().toISOString(),
         sessionName,
 
-        formInputs: {
-            latitude: latInput.value,
-            longitude: lonInput.value,
-            locationSearch: $('location-search').value,
-            launchDate: launchDateInput.value,
-            launchHour: launchHourSelect.value,
-            launchMin: launchMinSelect.value,
-            launchAmpm: launchAmpmSelect.value,
-            apogee: apogeeInput.value,
-            dr1: dr1Input.value,
-            apogeeDual: $('apogee-dual').value,
-            dr1Dual: $('dr1-dual').value,
-            transition: transitionInput.value,
-            dr2: dr2Input.value,
-            launchAngle: launchAngleInput.value,
-            launchAzimuth: launchAzimuthInput.value,
-            ascentRate: ascentRateInput.value,
-            calcMass: $('calc-mass').value,
-            calcDiameter: $('calc-diameter').value,
-            calcCd: $('calc-cd').value,
-        },
+        formInputs: getCurrentFormInputs(),
 
         unitState: {
             useImperial,
@@ -2289,6 +2609,8 @@ function collectSessionState(sessionName) {
             dispersion: serializeDispersion(s.dispersion),
             launchLat: s.launchLat,
             launchLon: s.launchLon,
+            formInputs: s.formInputs || null,
+            uiState: s.uiState || null,
         })),
         activeScenarioIndex,
         currentVisible,
@@ -2381,25 +2703,7 @@ function restoreSessionState(data) {
 
     // 4. Form input values (clamped to hard limits to guard against hand-edited .fmr files).
     const fi = data.formInputs || {};
-    latInput.value = clampInput('latitude', fi.latitude);
-    lonInput.value = clampInput('longitude', fi.longitude);
-    $('location-search').value = fi.locationSearch ?? '';
-    launchDateInput.value = fi.launchDate ?? '';
-    launchHourSelect.value = fi.launchHour ?? '';
-    launchMinSelect.value = fi.launchMin ?? '';
-    launchAmpmSelect.value = fi.launchAmpm ?? 'AM';
-    apogeeInput.value = clampInput('apogee', fi.apogee);
-    dr1Input.value = clampInput('dr1', fi.dr1);
-    $('apogee-dual').value = clampInput('apogeeDual', fi.apogeeDual);
-    $('dr1-dual').value = clampInput('dr1Dual', fi.dr1Dual);
-    transitionInput.value = clampInput('transition', fi.transition);
-    dr2Input.value = clampInput('dr2', fi.dr2);
-    launchAngleInput.value = clampInput('launchAngle', fi.launchAngle);
-    launchAzimuthInput.value = clampInput('launchAzimuth', fi.launchAzimuth);
-    ascentRateInput.value = clampInput('ascentRate', fi.ascentRate);
-    $('calc-mass').value = clampInput('calcMass', fi.calcMass);
-    $('calc-diameter').value = clampInput('calcDiameter', fi.calcDiameter);
-    $('calc-cd').value = clampInput('calcCd', fi.calcCd);
+    applyFormInputs(fi);
 
     // 5. ORK extracted data (restore display without raw XML).
     if (data.orkExtracted && data.orkExtracted.summaryVisible) {
@@ -2457,6 +2761,8 @@ function restoreSessionState(data) {
                 launchLat: sd.launchLat,
                 launchLon: sd.launchLon,
                 mapLayerGroup: L.layerGroup(),
+                formInputs: sd.formInputs || null,
+                uiState: sd.uiState || null,
             });
         }
     }

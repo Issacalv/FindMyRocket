@@ -231,7 +231,8 @@
                     <div class="input-row">
                         <div class="input-group">
                             <label for="apogee">Deployment Alt. <span class="unit unit-alt">m AGL</span></label>
-                            <input type="number" id="apogee" step="any" min="1" max="53150" placeholder="500" required>
+                            <input type="number" id="apogee" step="any" min="1" max="53148" placeholder="500" required>
+                            <div class="field-hint">Expected peak altitude (from your flight sim or last flight). Small launch tilts have negligible effect on this value.</div>
                         </div>
                         <div class="input-group">
                             <label for="dr1">Descent Rate <span class="unit unit-speed">m/s</span></label>
@@ -248,7 +249,8 @@
                     <div class="input-row">
                         <div class="input-group">
                             <label for="apogee-dual">Apogee Deployment Alt. <span class="unit unit-alt">m AGL</span></label>
-                            <input type="number" id="apogee-dual" step="any" min="1" max="53150" placeholder="500">
+                            <input type="number" id="apogee-dual" step="any" min="1" max="53148" placeholder="500">
+                            <div class="field-hint">Expected peak altitude. Small launch tilts have negligible effect on this value.</div>
                         </div>
                         <div class="input-group">
                             <label for="dr1-dual">Descent Rate <span class="unit unit-speed">m/s</span></label>
@@ -259,7 +261,7 @@
                     <div class="input-row">
                         <div class="input-group">
                             <label for="transition">Main Deployment Alt. <span class="unit unit-alt">m AGL</span></label>
-                            <input type="number" id="transition" step="any" min="0" max="53150" placeholder="200">
+                            <input type="number" id="transition" step="any" min="0" max="53148" placeholder="200">
                         </div>
                         <div class="input-group">
                             <label for="dr2">Descent Rate <span class="unit unit-speed">m/s</span></label>
@@ -299,9 +301,9 @@
             <div class="section-title" style="margin-top:0;padding-top:0;border-top:none">Results</div>
             <div class="results-header-btns">
                 <!-- Pin current results as a named scenario for comparison -->
-                <button type="button" id="pin-scenario-btn" class="btn-pin" title="Pin this result for comparison">
+                <button type="button" id="pin-scenario-btn" class="btn-pin" title="Save current inputs and results as a named scenario for comparison">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 17v5"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.89A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.89A2 2 0 0 0 5 15.24Z"/></svg>
-                    Pin Scenario
+                    Save Scenario
                 </button>
                 <!-- Opens the export modal to generate a printable field report -->
                 <button type="button" id="export-btn" class="btn-export">
