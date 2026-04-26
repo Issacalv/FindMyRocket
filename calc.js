@@ -406,6 +406,10 @@ function buildAscentPath(launchLat, launchLon, dx, dy) {
 //   launchLat/Lon -- launch site coordinates in decimal degrees
 //   initialDx/Dy -- optional horizontal offset at apogee (m), e.g. from
 //                    ascent simulation with a launch angle
+//   launchElevation     -- launch pad elevation in meters MSL (default 0)
+//   groundElevationAt   -- optional (lat, lon) -> meters MSL function;
+//                          when provided, descent terminates at local terrain
+//                          instead of pad elevation
 //
 // Returns an object with:
 //   landingLat/Lon -- predicted landing coordinates
@@ -414,7 +418,9 @@ function buildAscentPath(launchLat, launchLon, dx, dy) {
 //   driftBearing   -- compass bearing from launch to landing (degrees)
 //   path           -- array of [lat, lon] points for drawing the drift path
 //   dx, dy         -- total east-west and north-south displacement (m)
-export function calculateDrift(profile, apogee, transitionAlt, dr1, dr2, launchLat, launchLon, initialDx = 0, initialDy = 0) {
+export function calculateDrift(profile, apogee, transitionAlt, dr1, dr2, launchLat, launchLon,
+                               initialDx = 0, initialDy = 0,
+                               launchElevation = 0, groundElevationAt = null) {
     let dx = initialDx, dy = initialDy;
     let totalTime = 0;
 
@@ -422,26 +428,35 @@ export function calculateDrift(profile, apogee, transitionAlt, dr1, dr2, launchL
     const startDlat = dy / METERS_PER_DEG_LAT;
     const startDlon = dx / (METERS_PER_DEG_LAT * Math.cos(launchLat * DEG_TO_RAD));
     const path = [[launchLat + startDlat, launchLon + startDlon]];
-    let currentAlt = Math.min(apogee, MAX_ALTITUDE_M);
+    let currentAltMSL = Math.min(apogee, MAX_ALTITUDE_M) + launchElevation;
 
-    while (currentAlt > 0) {
-        const step = Math.min(ALT_STEP, currentAlt);
-        const midAlt = currentAlt - step / 2;
-        const descentRate = currentAlt > transitionAlt ? dr1 : dr2;
+    while (true) {
+        const dlat = dy / METERS_PER_DEG_LAT;
+        const dlon = dx / (METERS_PER_DEG_LAT * Math.cos(launchLat * DEG_TO_RAD));
+        const currLat = launchLat + dlat;
+        const currLon = launchLon + dlon;
+        const groundMSL = groundElevationAt ? groundElevationAt(currLat, currLon) : launchElevation;
+        const altAGL = currentAltMSL - groundMSL;
+        if (altAGL <= 0) break;
+
+        const step = Math.min(ALT_STEP, altAGL);
+        const descentRate = altAGL > transitionAlt ? dr1 : dr2;
         const dt = step / descentRate;
         totalTime += dt;
 
-        const wind = interpolateWind(profile, midAlt);
+        // Wind profile is anchored to the pad's altitude scale; index by pad-relative AGL.
+        const midPadAGL = (currentAltMSL - step / 2) - launchElevation;
+        const wind = interpolateWind(profile, midPadAGL);
         const dirRad = (wind.direction + 180) * DEG_TO_RAD;
 
         dx += wind.speed * Math.sin(dirRad) * dt;
         dy += wind.speed * Math.cos(dirRad) * dt;
 
-        currentAlt -= step;
+        currentAltMSL -= step;
 
-        const dlat = dy / METERS_PER_DEG_LAT;
-        const dlon = dx / (METERS_PER_DEG_LAT * Math.cos(launchLat * DEG_TO_RAD));
-        path.push([launchLat + dlat, launchLon + dlon]);
+        const newDlat = dy / METERS_PER_DEG_LAT;
+        const newDlon = dx / (METERS_PER_DEG_LAT * Math.cos(launchLat * DEG_TO_RAD));
+        path.push([launchLat + newDlat, launchLon + newDlon]);
     }
 
     const dlat = dy / METERS_PER_DEG_LAT;
@@ -473,7 +488,8 @@ export function calculateDrift(profile, apogee, transitionAlt, dr1, dr2, launchL
 // path (rod tilt + passive wind drift) when neither A nor B is available.
 export function calculateDispersion(apiData, apogee, transitionAlt, dr1, dr2, lat, lon, launchTime, isHistoricalData,
                                      launchAngleDeg = 0, launchAzimuthDeg = 0, ascentRate = 0, orkAscentProfile = null,
-                                     weathercockA = null, weathercockB = null) {
+                                     weathercockA = null, weathercockB = null,
+                                     launchElevation = 0, groundElevationAt = null) {
     const landingPoints = [];
 
     const target = launchTime || new Date();
@@ -547,7 +563,8 @@ export function calculateDispersion(apiData, apogee, transitionAlt, dr1, dr2, la
                         ascentPath = ascentResult.path;
                     }
 
-                    const result = calculateDrift(perturbedProfile, apogee, transitionAlt, dr1 * drf, dr2 * drf, lat, lon, ascentDx, ascentDy);
+                    const result = calculateDrift(perturbedProfile, apogee, transitionAlt, dr1 * drf, dr2 * drf, lat, lon,
+                                                   ascentDx, ascentDy, launchElevation, groundElevationAt);
                     landingPoints.push({ lat: result.landingLat, lon: result.landingLon });
 
                     if (hi === baseIdx && sf === 1.0 && dOff === 0 && drf === 1.0) {
@@ -562,7 +579,8 @@ export function calculateDispersion(apiData, apogee, transitionAlt, dr1, dr2, la
 
     const ellipse = fitEllipse(landingPoints, lat);
     const forecastTime = times[baseIdx];
-    return { primaryResult, primaryProfile, primaryAscentPath, ellipse, landingPoints, forecastTime, apogee };
+    return { primaryResult, primaryProfile, primaryAscentPath, ellipse, landingPoints, forecastTime, apogee,
+             launchElevation, terrainAware: !!groundElevationAt };
 }
 
 // ============================================================

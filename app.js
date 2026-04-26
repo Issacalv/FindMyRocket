@@ -751,6 +751,59 @@ function buildWindCacheKey(lat, lon, dateStr, hh, mm) {
     return `${lat.toFixed(4)}_${lon.toFixed(4)}_${dateStr}_${hh}:${mm}`;
 }
 
+// ============================================================
+// OPEN-METEO API -- Elevation Lookup (terrain-aware landing)
+// ============================================================
+
+async function fetchElevation(latArr, lonArr) {
+    const url = `https://api.open-meteo.com/v1/elevation?latitude=${latArr.join(',')}&longitude=${lonArr.join(',')}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+        const res = await fetch(url, { signal: controller.signal });
+        clearTimeout(timeout);
+        if (!res.ok) throw new Error(`Elevation API error: ${res.status}`);
+        return await res.json();
+    } catch (e) {
+        clearTimeout(timeout);
+        if (e.name === 'AbortError') throw new Error('Elevation request timed out');
+        throw e;
+    }
+}
+
+const elevationGridCache = new Map();
+
+async function fetchTerrainGrid(south, west, north, east, n = 9) {
+    const key = `${south.toFixed(3)}_${west.toFixed(3)}_${north.toFixed(3)}_${east.toFixed(3)}_${n}`;
+    if (elevationGridCache.has(key)) return elevationGridCache.get(key);
+    const lats = [], lons = [];
+    for (let i = 0; i < n; i++) {
+        for (let j = 0; j < n; j++) {
+            lats.push(south + (north - south) * i / (n - 1));
+            lons.push(west + (east - west) * j / (n - 1));
+        }
+    }
+    const { elevation } = await fetchElevation(lats, lons);
+    const grid = { south, west, north, east, n, elevation };
+    elevationGridCache.set(key, grid);
+    return grid;
+}
+
+function makeGroundElevationAt(grid) {
+    const { south, west, north, east, n, elevation } = grid;
+    const dLat = (north - south) / (n - 1);
+    const dLon = (east - west) / (n - 1);
+    return (lat, lon) => {
+        const fi = Math.max(0, Math.min(n - 1.0001, (lat - south) / dLat));
+        const fj = Math.max(0, Math.min(n - 1.0001, (lon - west) / dLon));
+        const i0 = Math.floor(fi), j0 = Math.floor(fj);
+        const ti = fi - i0, tj = fj - j0;
+        const e00 = elevation[i0 * n + j0], e01 = elevation[i0 * n + j0 + 1];
+        const e10 = elevation[(i0 + 1) * n + j0], e11 = elevation[(i0 + 1) * n + j0 + 1];
+        return (1 - ti) * ((1 - tj) * e00 + tj * e01) + ti * ((1 - tj) * e10 + tj * e11);
+    };
+}
+
 // Wind profile construction, interpolation, drift calculation,
 // dispersion, ellipse fitting, and utility functions are in calc.js.
 
@@ -882,6 +935,15 @@ function renderResultCards(dispersion) {
         $('res-forecast-time').textContent = forecastTime.toLocaleString([], {
             month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
         });
+    }
+
+    if (dispersion.terrainAware) {
+        const elev = dispersion.launchElevation;
+        $('res-launch-elev').textContent = useImperial
+            ? `${Math.round(elev * FT_PER_M)} ft MSL`
+            : `${Math.round(elev)} m MSL`;
+    } else {
+        $('res-launch-elev').textContent = 'Flat ground (fallback)';
     }
 }
 
@@ -1467,9 +1529,28 @@ form.addEventListener('submit', async (e) => {
             showToast('Historical date — using surface wind extrapolation (less accurate above 100m)', 'warning');
         }
         const orkProfile = orkFlightData ? orkFlightData.ascentProfile : null;
+
+        let launchElevation = 0, groundElevationAt = null;
+        try {
+            const maxWind = 30;
+            const minDr = Math.min(dr1 || Infinity, (dr2 > 0 ? dr2 : Infinity));
+            const maxDriftM = (apogee / minDr) * maxWind * 1.5;
+            const radiusM = Math.max(2000, Math.min(maxDriftM, 50000));
+            const dLat = radiusM / 111320;
+            const dLon = radiusM / (111320 * Math.cos(lat * Math.PI / 180));
+            const padElev = (await fetchElevation([lat], [lon])).elevation[0];
+            const grid = await fetchTerrainGrid(lat - dLat, lon - dLon, lat + dLat, lon + dLon, 9);
+            launchElevation = padElev;
+            groundElevationAt = makeGroundElevationAt(grid);
+        } catch (e) {
+            console.warn('Elevation fetch failed; flat-ground fallback:', e);
+            showToast('Elevation data unavailable — using flat-ground assumption', 'warning');
+        }
+
         const dispersion = calculateDispersion(apiData, apogee, transition, dr1, dr2, lat, lon, launchTime, isHistoricalData,
                                                 launchAngle, launchAzimuth, ascentRate, orkProfile,
-                                                orkWeathercockA, orkWeathercockB);
+                                                orkWeathercockA, orkWeathercockB,
+                                                launchElevation, groundElevationAt);
         renderResults(dispersion, lat, lon);
     } catch (err) {
         console.error('FindMyRocket error:', err);

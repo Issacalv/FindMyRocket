@@ -61,5 +61,5 @@ This produces 162 simulated landing points. A 2-sigma covariance ellipse is fitt
 - Maximum altitude: ~53,150 ft (16,200 m), limited by the highest pressure level available from Open-Meteo (100 hPa)
 - Historical wind data only has surface-level measurements (10m and 100m); higher altitudes are extrapolated and less accurate
 - Forecast data is available up to 16 days ahead
-- The model assumes vertical descent only (no horizontal flight during ascent, no ballistic trajectory)
+- The model assumes vertical descent only (no horizontal flight during ascent, no ballistic trajectory). Terrain elevation is fetched per flight from the Open-Meteo Elevation API and the descent terminates when the rocket's MSL altitude crosses local ground; if the elevation lookup fails, the model falls back to flat ground at the launch-pad elevation.
 - Wind direction interpolation assumes smooth transitions between pressure levels
