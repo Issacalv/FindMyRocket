@@ -10,7 +10,8 @@ import {
     FT_PER_M, FPS_PER_MS, MPH_PER_MS,
     MAX_ALTITUDE_M, MAX_ALTITUDE_FT,
     calculateDispersion, createEllipsePoints,
-    bearingToCompass, calcDescentRateFromParams
+    bearingToCompass, calcDescentRateFromParams,
+    computeRodTiltOffset
 } from './calc.js';
 
 // Hard limits for all numeric input fields. These are enforced both via
@@ -1438,7 +1439,8 @@ form.addEventListener('submit', async (e) => {
         }
         const orkProfile = orkFlightData ? orkFlightData.ascentProfile : null;
         const dispersion = calculateDispersion(apiData, apogee, transition, dr1, dr2, lat, lon, launchTime, isHistoricalData,
-                                                launchAngle, launchAzimuth, ascentRate, orkProfile);
+                                                launchAngle, launchAzimuth, ascentRate, orkProfile,
+                                                orkWeathercockA, orkWeathercockB);
         renderResults(dispersion, lat, lon);
     } catch (err) {
         console.error('FindMyRocket error:', err);
@@ -1505,6 +1507,12 @@ let orkFlightData = null;
 // Stored parsed .ork XML doc and motor configs for config switching.
 let orkParsedDoc = null;
 let orkMotorConfigs = [];
+// Weather-cocking state extracted from the active simulation (see calc.js
+// for definitions). orkWeathercockA: per-step (time, altitude, V) profile
+// for the NASA tan(θ)=w/V formula. orkWeathercockB: pre-computed back-fit
+// coefficients from ORK's recorded apogee position.
+let orkWeathercockA = null;
+let orkWeathercockB = null;
 
 // Marks an input as auto-filled (cyan highlight). The highlight clears
 // when the user manually edits the field.
@@ -1596,6 +1604,85 @@ function extractAllMotorConfigs(doc) {
     return configs;
 }
 
+// OpenRocket XML stores winddirection in radians but launchrodangle and
+// launchroddirection in degrees on the audited fixtures. Auto-detect by
+// magnitude: a launch rod tilt > π/2 rad (90°) is physically implausible,
+// and a launch rod direction > 2π rad means the value can't be radians.
+function autoDetectAngleRad(val, isDirection) {
+    if (isNaN(val)) return 0;
+    const threshold = isDirection ? 6.3 : 1.5;
+    return val > threshold ? val * (Math.PI / 180) : val;
+}
+
+// Builds the weathercockB state object from ORK's recorded apogee position.
+// Subtracts the rod-tilt baseline so the back-fit coefficient reflects only
+// the wind-dependent portion of the offset, then computes per-axis (along/cross)
+// coefficients in ORK's wind frame.
+function buildWeathercockB(params) {
+    const {
+        apogeePosEast, apogeePosNorth, apogeeAlt, ascentProfile,
+        orkWindSpeed, orkWindDirRad, orkRodAngleRad, orkRodDirRad,
+    } = params;
+
+    // Subtract ORK's rod-tilt baseline. computeRodTiltOffset takes degrees.
+    let baselineEast = 0, baselineNorth = 0;
+    if (orkRodAngleRad > 0) {
+        const baseline = computeRodTiltOffset(
+            orkRodAngleRad * (180 / Math.PI),
+            orkRodDirRad * (180 / Math.PI),
+            apogeeAlt,
+            ascentProfile,
+            0
+        );
+        baselineEast = baseline.dx;
+        baselineNorth = baseline.dy;
+    }
+    const windEast = apogeePosEast - baselineEast;
+    const windNorth = apogeePosNorth - baselineNorth;
+
+    // Wind FROM-direction. Prefer explicit; else derive from the wind-induced
+    // offset (rocket weathercocks INTO the wind, so wind FROM-direction equals
+    // the geographic direction from pad to apogee).
+    let windDirRad;
+    let windDirSource;
+    if (orkWindDirRad != null) {
+        windDirRad = orkWindDirRad;
+        windDirSource = 'explicit';
+    } else if (Math.hypot(windEast, windNorth) > 0.5) {
+        windDirRad = Math.atan2(windEast, windNorth);
+        windDirSource = 'derived';
+    } else {
+        windDirRad = 0;
+        windDirSource = 'unknown';
+    }
+    windDirRad = ((windDirRad % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+
+    // Decompose wind-induced offset into ORK wind frame: along = FROM-direction,
+    // cross = perpendicular (clockwise when viewed from above).
+    const alongEast = Math.sin(windDirRad);
+    const alongNorth = Math.cos(windDirRad);
+    const crossEast = Math.cos(windDirRad);
+    const crossNorth = -Math.sin(windDirRad);
+    const offsetAlong = windEast * alongEast + windNorth * alongNorth;
+    const offsetCross = windEast * crossEast + windNorth * crossNorth;
+
+    let coeffAlong = 0, coeffCross = 0;
+    if (orkWindSpeed > 0.01) {
+        coeffAlong = offsetAlong / orkWindSpeed;
+        coeffCross = offsetCross / orkWindSpeed;
+    }
+
+    return {
+        apogeePosEast, apogeePosNorth,
+        orkWindSpeed,
+        orkWindDirRad: windDirRad,
+        windDirSource,
+        orkRodAngleRad,
+        coeffAlong, coeffCross,
+        fallbackOffset: { dx: apogeePosEast, dy: apogeePosNorth },
+    };
+}
+
 // Walks the OpenRocket XML DOM and extracts rocket info, recovery
 // devices, motor designation, mass, and simulation data.
 // If selectedConfigId is provided, uses that motor config instead of the default.
@@ -1655,23 +1742,45 @@ function extractOrkData(doc, selectedConfigId) {
         result.isDualDeploy = true;
     }
 
-    // Simulation data: find the simulation matching the selected config,
-    // then fall back to uptodate, then first sim.
+    // Simulation selection. Validate that the simulation has actual datapoints
+    // (not just a flightdata attribute block — Der Flammenwallet has those
+    // without any databranch). Preference order:
+    //   configId match → uptodate → loaded → outdated → reject.
     const sims = doc.querySelectorAll('simulation');
+    const simHasUsableData = (sim) => {
+        const fd = sim.querySelector('flightdata');
+        if (!fd) return false;
+        const branch = fd.querySelector('databranch');
+        if (!branch) return false;
+        return branch.querySelectorAll('datapoint').length > 0;
+    };
+    const findByPreference = (preferredStatuses, requireConfigId) => {
+        for (const sim of sims) {
+            if (requireConfigId) {
+                const simConfigEl = sim.querySelector('configid');
+                if (!simConfigEl || simConfigEl.textContent.trim() !== configId) continue;
+            }
+            const status = sim.getAttribute('status');
+            if (!preferredStatuses.includes(status)) continue;
+            if (simHasUsableData(sim)) return sim;
+        }
+        return null;
+    };
     let bestSim = null;
     if (configId) {
-        for (const sim of sims) {
-            const simConfigEl = sim.querySelector('configid');
-            if (simConfigEl && simConfigEl.textContent.trim() === configId) {
-                bestSim = sim; break;
-            }
-        }
+        bestSim = findByPreference(['uptodate', 'loaded', 'outdated'], true);
     }
+    if (!bestSim) bestSim = findByPreference(['uptodate'], false);
+    if (!bestSim) bestSim = findByPreference(['loaded'], false);
+    if (!bestSim) bestSim = findByPreference(['outdated'], false);
+    // Absolute fallback for files where status is missing entirely.
     if (!bestSim) {
         for (const sim of sims) {
-            if (sim.getAttribute('status') === 'uptodate') { bestSim = sim; break; }
+            if (simHasUsableData(sim)) { bestSim = sim; break; }
         }
     }
+    // Last resort: first sim, even without usable data — for the maxaltitude
+    // attribute fallback path below.
     if (!bestSim && sims.length > 0) bestSim = sims[0];
 
     if (bestSim) {
@@ -1680,7 +1789,15 @@ function extractOrkData(doc, selectedConfigId) {
             const maxAlt = parseFloat(fd.getAttribute('maxaltitude'));
             if (!isNaN(maxAlt)) result.deploymentAltitude = maxAlt;
 
-            // Extract mass from the first datapoint (column 19 = Mass in kg).
+            // Read launch conditions for weather-cocking baseline subtraction.
+            // We DO NOT read launchlatitude/launchlongitude — those are template
+            // defaults (28.61, -80.6) in every audited fixture file.
+            const conds = bestSim.querySelector('conditions');
+            const orkWindSpeed = parseFloat(conds?.querySelector('windaverage')?.textContent);
+            const orkWindDirRadRaw = parseFloat(conds?.querySelector('winddirection')?.textContent);
+            const orkRodAngleRad = autoDetectAngleRad(parseFloat(conds?.querySelector('launchrodangle')?.textContent), false);
+            const orkRodDirRad = autoDetectAngleRad(parseFloat(conds?.querySelector('launchroddirection')?.textContent), true);
+
             const branch = fd.querySelector('databranch');
             if (branch) {
                 const typesStr = branch.getAttribute('types') || '';
@@ -1688,6 +1805,9 @@ function extractOrkData(doc, selectedConfigId) {
                 const massIdx = types.indexOf('Mass');
                 const altIdx = types.indexOf('Altitude');
                 const timeIdx = types.indexOf('Time');
+                const vvelIdx = types.indexOf('Vertical velocity');
+                const posEastIdx = types.indexOf('Position East of launch');
+                const posNorthIdx = types.indexOf('Position North of launch');
 
                 const datapoints = branch.querySelectorAll('datapoint');
                 if (datapoints.length > 0 && massIdx >= 0) {
@@ -1696,21 +1816,64 @@ function extractOrkData(doc, selectedConfigId) {
                     if (!isNaN(mass) && mass > 0) result.totalMass = mass;
                 }
 
-                // Extract ascent profile (time, altitude) for flight visualization.
-                if (timeIdx >= 0 && altIdx >= 0) {
-                    const ascentProfile = [];
+                // Walk all datapoints, capturing what's available per row.
+                // Apogee is the global argmax of altitude (NOT first decrease —
+                // that's booster-burnout altitude on multistage rockets).
+                if (timeIdx >= 0 && altIdx >= 0 && datapoints.length > 0) {
+                    const allRows = [];
                     for (const dp of datapoints) {
                         const vals = dp.textContent.trim().split(/\s*,\s*/);
                         const time = parseFloat(vals[timeIdx]);
                         const alt = parseFloat(vals[altIdx]);
-                        if (!isNaN(time) && !isNaN(alt)) {
-                            ascentProfile.push({ time, altitude: alt });
-                            // Stop after apogee (altitude starts decreasing).
-                            if (ascentProfile.length > 2 && alt < ascentProfile[ascentProfile.length - 2].altitude) break;
+                        if (isNaN(time) || isNaN(alt)) continue;
+                        const row = { time, altitude: alt };
+                        if (vvelIdx >= 0) {
+                            const v = parseFloat(vals[vvelIdx]);
+                            if (!isNaN(v)) row.V = v;
                         }
+                        if (posEastIdx >= 0) {
+                            const e = parseFloat(vals[posEastIdx]);
+                            if (!isNaN(e)) row.posEast = e;
+                        }
+                        if (posNorthIdx >= 0) {
+                            const n = parseFloat(vals[posNorthIdx]);
+                            if (!isNaN(n)) row.posNorth = n;
+                        }
+                        allRows.push(row);
                     }
-                    if (ascentProfile.length > 2) {
-                        result.simulationData = { ascentProfile };
+
+                    // Find the global apogee.
+                    let apogeeIdx = 0;
+                    for (let i = 1; i < allRows.length; i++) {
+                        if (allRows[i].altitude > allRows[apogeeIdx].altitude) apogeeIdx = i;
+                    }
+                    const ascentRows = allRows.slice(0, apogeeIdx + 1);
+                    if (ascentRows.length > 2) {
+                        result.simulationData = {
+                            ascentProfile: ascentRows.map(r => ({ time: r.time, altitude: r.altitude }))
+                        };
+
+                        // Build weathercockA: per-step (time, altitude, V) for the formula.
+                        if (vvelIdx >= 0 && ascentRows.every(r => r.V !== undefined)) {
+                            result.weathercockA = {
+                                profile: ascentRows.map(r => ({ time: r.time, altitude: r.altitude, V: r.V }))
+                            };
+                        }
+
+                        // Build weathercockB: back-fit from recorded apogee position.
+                        const apogeeRow = ascentRows[ascentRows.length - 1];
+                        if (apogeeRow.posEast !== undefined && apogeeRow.posNorth !== undefined) {
+                            result.weathercockB = buildWeathercockB({
+                                apogeePosEast: apogeeRow.posEast,
+                                apogeePosNorth: apogeeRow.posNorth,
+                                apogeeAlt: apogeeRow.altitude,
+                                ascentProfile: result.simulationData.ascentProfile,
+                                orkWindSpeed: isNaN(orkWindSpeed) ? 0 : orkWindSpeed,
+                                orkWindDirRad: isNaN(orkWindDirRadRaw) ? null : orkWindDirRadRaw,
+                                orkRodAngleRad: isNaN(orkRodAngleRad) ? 0 : orkRodAngleRad,
+                                orkRodDirRad: isNaN(orkRodDirRad) ? 0 : orkRodDirRad,
+                            });
+                        }
                     }
                 }
 
@@ -1774,8 +1937,12 @@ function applyOrkData(orkData) {
         ? (useImperial ? `${(orkData.totalMass * 2.20462).toFixed(2)} lb` : `${orkData.totalMass.toFixed(2)} kg`)
         : '—';
 
-    // Store simulation data for ascent visualization.
+    // Store simulation data for ascent visualization, plus weather-cocking
+    // state (A: NASA formula profile, B: ORK back-fit coefficients).
     orkFlightData = orkData.simulationData;
+    orkWeathercockA = orkData.weathercockA || null;
+    orkWeathercockB = orkData.weathercockB || null;
+    renderWeathercockInfo(orkData);
 
     if (orkData.isDualDeploy) {
         // Switch to dual deploy mode.
@@ -1913,12 +2080,47 @@ function applyOrkData(orkData) {
     }
 }
 
+// Renders the weather-cocking info card. Surfaces which approach (A or B)
+// will be used and a sample magnitude so the user can sanity-check at a
+// glance without running the dispersion. Hidden when neither A nor B exist.
+function renderWeathercockInfo(orkData) {
+    const el = $('weathercock-info');
+    if (!el) return;
+    const wcB = orkData.weathercockB;
+    const wcA = orkData.weathercockA;
+    if (!wcB && !wcA) {
+        el.hidden = true;
+        el.textContent = '';
+        return;
+    }
+    const lines = [];
+    if (wcB) {
+        const totalOffset = Math.hypot(wcB.apogeePosEast, wcB.apogeePosNorth);
+        const offsetDisp = useImperial
+            ? `${(totalOffset * FT_PER_M).toFixed(0)} ft`
+            : `${totalOffset.toFixed(0)} m`;
+        const windDisp = useImperial
+            ? `${(wcB.orkWindSpeed * MPH_PER_MS).toFixed(1)} mph`
+            : `${wcB.orkWindSpeed.toFixed(1)} m/s`;
+        const dirNote = wcB.windDirSource === 'derived' ? ' (direction derived from offset)' : '';
+        lines.push(`Weather cocking from ORK: ${offsetDisp} apogee offset @ ${windDisp} ORK wind${dirNote}. Will scale to live wind.`);
+    } else if (wcA) {
+        lines.push('Weather cocking will be computed from ORK vertical-velocity profile using NASA tan(θ)=w/V formula.');
+    }
+    el.textContent = lines.join(' ');
+    el.hidden = false;
+}
+
 // Clear .ork import.
 $('ork-clear-btn').addEventListener('click', () => {
     orkSummary.hidden = true;
     orkFlightData = null;
     orkParsedDoc = null;
     orkMotorConfigs = [];
+    orkWeathercockA = null;
+    orkWeathercockB = null;
+    const wcInfo = $('weathercock-info');
+    if (wcInfo) { wcInfo.hidden = true; wcInfo.textContent = ''; }
     clearAutoFilled();
     const ascentHint = $('ascent-rate-hint');
     ascentHint.textContent = 'Average vertical speed to apogee. Import a .ork file for accurate per-step timing.';
@@ -2595,6 +2797,9 @@ function collectSessionState(sessionName) {
             recoveryDisplay: $('ork-recovery')?.textContent || '',
             summaryVisible: !orkSummary.hidden,
             selectedConfigId: $('ork-motor-select')?.value || null,
+            weathercockA: orkWeathercockA,
+            weathercockB: orkWeathercockB,
+            weathercockInfoText: $('weathercock-info')?.textContent || '',
         } : null,
 
         lastDispersion: serializeDispersion(lastDispersion),
@@ -2660,7 +2865,11 @@ function clearAllState() {
     orkFlightData = null;
     orkParsedDoc = null;
     orkMotorConfigs = [];
+    orkWeathercockA = null;
+    orkWeathercockB = null;
     orkSummary.hidden = true;
+    const wcInfoEl = $('weathercock-info');
+    if (wcInfoEl) { wcInfoEl.hidden = true; wcInfoEl.textContent = ''; }
     clearAutoFilled();
 
     // Clear scenario bar and comparison table.
@@ -2710,12 +2919,20 @@ function restoreSessionState(data) {
         const ork = data.orkExtracted;
         orkFlightData = ork.flightData || null;
         orkMotorConfigs = ork.motorConfigs || [];
+        orkWeathercockA = ork.weathercockA || null;
+        orkWeathercockB = ork.weathercockB || null;
 
         $('ork-rocket-name').textContent = ork.rocketName || 'Unknown Rocket';
         $('ork-motor').textContent = ork.motorDesignation || '—';
         $('ork-mass').textContent = ork.massDisplay || '—';
         $('ork-recovery').textContent = ork.recoveryDisplay || '—';
         orkSummary.hidden = false;
+
+        const wcInfo = $('weathercock-info');
+        if (wcInfo && ork.weathercockInfoText) {
+            wcInfo.textContent = ork.weathercockInfoText;
+            wcInfo.hidden = false;
+        }
 
         // Render motor config selector but disable switching (no raw XML).
         if (orkMotorConfigs.length > 1) {

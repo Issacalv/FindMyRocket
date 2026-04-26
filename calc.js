@@ -247,6 +247,149 @@ export function simulateAscentFromProfile(windProfile, ascentProfile, launchAngl
 }
 
 // ============================================================
+// WEATHER COCKING
+// ============================================================
+//
+// Three physically distinct horizontal-offset sources during ascent:
+//   (i)   Rod tilt: deterministic gravity-turn from a tilted launch rod.
+//   (ii)  Weather cocking: rocket pitches into the wind under aerodynamic
+//         forces during powered ascent.
+//   (iii) Passive air-mass drift: rocket carried with the moving air.
+// They sum vectorially. Helpers below compute each independently so the
+// caller can mix and match by data quality.
+
+// (i) Rod-tilt offset only — pure gravity-turn integration with no wind.
+// Uses ascentProfile (time/altitude pairs) when given, else a constant
+// ascentRate. Used both at ORK extraction (to remove ORK's rod baseline
+// before deriving its weather-cock coefficient) and at dispersion (to add
+// the website's launch-angle input on top of the cocking estimate).
+export function computeRodTiltOffset(launchAngleDeg, launchAzimuthDeg, apogeeAlt, ascentProfile, ascentRate) {
+    if (launchAngleDeg <= 0 || apogeeAlt <= 0) return { dx: 0, dy: 0 };
+    const angleRad = launchAngleDeg * DEG_TO_RAD;
+    const azimuthRad = launchAzimuthDeg * DEG_TO_RAD;
+    let dx = 0, dy = 0;
+
+    if (ascentProfile && ascentProfile.length >= 2) {
+        const maxAlt = ascentProfile[ascentProfile.length - 1].altitude;
+        if (maxAlt <= 0) return { dx: 0, dy: 0 };
+        for (let i = 1; i < ascentProfile.length; i++) {
+            const dt = ascentProfile[i].time - ascentProfile[i - 1].time;
+            if (dt <= 0) continue;
+            const midAlt = (ascentProfile[i].altitude + ascentProfile[i - 1].altitude) / 2;
+            const verticalVelocity = (ascentProfile[i].altitude - ascentProfile[i - 1].altitude) / dt;
+            const fractionRemaining = Math.max(0, 1 - (midAlt / maxAlt));
+            const horizontalVelocity = verticalVelocity * Math.tan(angleRad * fractionRemaining);
+            dx += horizontalVelocity * Math.sin(azimuthRad) * dt;
+            dy += horizontalVelocity * Math.cos(azimuthRad) * dt;
+        }
+        return { dx, dy };
+    }
+
+    if (ascentRate > 0) {
+        let currentAlt = 0;
+        while (currentAlt < apogeeAlt) {
+            const step = Math.min(ALT_STEP, apogeeAlt - currentAlt);
+            const midAlt = currentAlt + step / 2;
+            const dt = step / ascentRate;
+            const fractionRemaining = 1 - (midAlt / apogeeAlt);
+            const horizontalVelocity = ascentRate * Math.tan(angleRad * fractionRemaining);
+            dx += horizontalVelocity * Math.sin(azimuthRad) * dt;
+            dy += horizontalVelocity * Math.cos(azimuthRad) * dt;
+            currentAlt += step;
+        }
+    }
+    return { dx, dy };
+}
+
+// (ii) Weather cocking via the NASA tan(θ) = w/V formula.
+// At each ascent step: θ = atan(w/V), horizontal velocity = V × sin(θ),
+// directed INTO the wind (FROM-direction). Integrating gives the apogee
+// horizontal offset in the upwind direction.
+//
+// ascentProfileV: array of { time, altitude, V } from ORK. If null,
+// synthesizes a constant-V profile from ascentRate up to apogeeAlt.
+export function computeWeathercockFormula(windProfile, ascentProfileV, apogeeAlt, ascentRate) {
+    let steps = null;
+
+    if (ascentProfileV && ascentProfileV.length >= 2) {
+        steps = [];
+        for (let i = 1; i < ascentProfileV.length; i++) {
+            const dt = ascentProfileV[i].time - ascentProfileV[i - 1].time;
+            if (dt <= 0) continue;
+            const midAlt = (ascentProfileV[i].altitude + ascentProfileV[i - 1].altitude) / 2;
+            const V = (ascentProfileV[i].V + ascentProfileV[i - 1].V) / 2;
+            if (V < 1) continue; // skip near-stationary rows (avoid tiny-V blowup)
+            steps.push({ midAlt, V, dt });
+        }
+    } else if (ascentRate > 0 && apogeeAlt > 0) {
+        steps = [];
+        let currentAlt = 0;
+        while (currentAlt < apogeeAlt) {
+            const step = Math.min(ALT_STEP, apogeeAlt - currentAlt);
+            const midAlt = currentAlt + step / 2;
+            const dt = step / ascentRate;
+            steps.push({ midAlt, V: ascentRate, dt });
+            currentAlt += step;
+        }
+    }
+
+    if (!steps || steps.length === 0) return { dx: 0, dy: 0, source: 'formula' };
+
+    let dx = 0, dy = 0;
+    for (const { midAlt, V, dt } of steps) {
+        const wind = interpolateWind(windProfile, midAlt);
+        const w = wind.speed;
+        if (w <= 0) continue;
+        const theta = Math.atan2(w, V);
+        const vh = V * Math.sin(theta); // horizontal velocity magnitude (= w·cos θ)
+        // wind.direction is the FROM-direction in degrees. Rocket points INTO wind.
+        const fromDirRad = wind.direction * DEG_TO_RAD;
+        dx += vh * Math.sin(fromDirRad) * dt;
+        dy += vh * Math.cos(fromDirRad) * dt;
+    }
+    return { dx, dy, source: 'formula' };
+}
+
+// (ii) Weather cocking via ORK back-fit coefficient.
+// One ORK sim only samples a single wind direction, so the rocket's
+// directional responsiveness can't be measured — only its magnitude
+// per unit wind. Treat the alongwind coefficient as isotropic: the
+// rocket cocks INTO whatever direction live wind blows from, with
+// magnitude = coeffAlong × live_wind_speed.
+// Falls back to the raw ORK apogee offset if ORK was simulated with
+// zero wind (coefficient undefined).
+export function computeWeathercockOrkBackfit(windProfile, weathercockB) {
+    if (!weathercockB) return { dx: 0, dy: 0, source: 'none' };
+
+    if (!weathercockB.orkWindSpeed || weathercockB.orkWindSpeed < 0.01) {
+        return {
+            dx: weathercockB.fallbackOffset?.dx || 0,
+            dy: weathercockB.fallbackOffset?.dy || 0,
+            source: 'ork-direct',
+        };
+    }
+
+    const surface = windProfile[0] || { speed: 0, direction: 0 };
+    const liveSpeed = surface.speed;
+    const liveFromDirRad = surface.direction * DEG_TO_RAD;
+
+    // Magnitude scales linearly with live wind; direction = live wind FROM.
+    const offsetMagnitude = weathercockB.coeffAlong * liveSpeed;
+    const dx = offsetMagnitude * Math.sin(liveFromDirRad);
+    const dy = offsetMagnitude * Math.cos(liveFromDirRad);
+
+    return { dx, dy, source: 'ork-backfit' };
+}
+
+// Builds a 2-point ascent path (launch → apogee) for map visualization
+// when using A or B (per-step path isn't worth the overhead).
+function buildAscentPath(launchLat, launchLon, dx, dy) {
+    const dlat = dy / METERS_PER_DEG_LAT;
+    const dlon = dx / (METERS_PER_DEG_LAT * Math.cos(launchLat * DEG_TO_RAD));
+    return [[launchLat, launchLon], [launchLat + dlat, launchLon + dlon]];
+}
+
+// ============================================================
 // DRIFT CALCULATION (Numerical Integration)
 // ============================================================
 
@@ -323,8 +466,14 @@ export function calculateDrift(profile, apogee, transitionAlt, dr1, dr2, launchL
 // naturally widens the dispersion zone.
 //
 // Total scenarios: 6 hours * 3 speeds * 3 dirs * 3 rates = 162
+//
+// Weather cocking selection (hybrid): prefer ORK back-fit (B) when high-quality
+// flight data is available, fall back to NASA formula (A) using ORK's V profile,
+// then formula with constant V from ascentRate, then the legacy gravity-turn
+// path (rod tilt + passive wind drift) when neither A nor B is available.
 export function calculateDispersion(apiData, apogee, transitionAlt, dr1, dr2, lat, lon, launchTime, isHistoricalData,
-                                     launchAngleDeg = 0, launchAzimuthDeg = 0, ascentRate = 0, orkAscentProfile = null) {
+                                     launchAngleDeg = 0, launchAzimuthDeg = 0, ascentRate = 0, orkAscentProfile = null,
+                                     weathercockA = null, weathercockB = null) {
     const landingPoints = [];
 
     const target = launchTime || new Date();
@@ -345,7 +494,10 @@ export function calculateDispersion(apiData, apogee, transitionAlt, dr1, dr2, la
     const dirOffsets = [-15, 0, 15];
     const drFactors = [0.9, 1.0, 1.1];
 
-    const hasAscent = (launchAngleDeg > 0 && ascentRate > 0) || orkAscentProfile;
+    // Weathercock A or B is "available" if the data unlocks it. A also unlocks
+    // from a constant ascent rate alone — no ORK required.
+    const hasCocking = !!weathercockB || (weathercockA && weathercockA.profile) || ascentRate > 0;
+    const hasLegacyAscent = !hasCocking && launchAngleDeg > 0 && (orkAscentProfile || ascentRate > 0);
 
     let primaryResult = null;
     let primaryProfile = null;
@@ -362,16 +514,34 @@ export function calculateDispersion(apiData, apogee, transitionAlt, dr1, dr2, la
                         direction: (p.direction + dOff + 360) % 360
                     }));
 
-                    // Simulate ascent with the same perturbed wind profile.
                     let ascentDx = 0, ascentDy = 0;
                     let ascentPath = null;
-                    if (hasAscent) {
-                        let ascentResult;
-                        if (orkAscentProfile) {
-                            ascentResult = simulateAscentFromProfile(perturbedProfile, orkAscentProfile, launchAngleDeg, launchAzimuthDeg, lat, lon);
+
+                    if (hasCocking) {
+                        // (ii) Weather cocking — pick B over A.
+                        let cocking;
+                        if (weathercockB) {
+                            cocking = computeWeathercockOrkBackfit(perturbedProfile, weathercockB);
+                        } else if (weathercockA && weathercockA.profile) {
+                            cocking = computeWeathercockFormula(perturbedProfile, weathercockA.profile, apogee, ascentRate);
                         } else {
-                            ascentResult = simulateAscent(perturbedProfile, apogee, launchAngleDeg, launchAzimuthDeg, ascentRate, lat, lon);
+                            cocking = computeWeathercockFormula(perturbedProfile, null, apogee, ascentRate);
                         }
+                        ascentDx = cocking.dx;
+                        ascentDy = cocking.dy;
+
+                        // (i) Rod tilt from website inputs — independent, adds vectorially.
+                        if (launchAngleDeg > 0) {
+                            const rodTilt = computeRodTiltOffset(launchAngleDeg, launchAzimuthDeg, apogee, orkAscentProfile, ascentRate);
+                            ascentDx += rodTilt.dx;
+                            ascentDy += rodTilt.dy;
+                        }
+                        ascentPath = buildAscentPath(lat, lon, ascentDx, ascentDy);
+                    } else if (hasLegacyAscent) {
+                        // Legacy path: rod tilt + passive wind drift, no weather cocking.
+                        const ascentResult = orkAscentProfile
+                            ? simulateAscentFromProfile(perturbedProfile, orkAscentProfile, launchAngleDeg, launchAzimuthDeg, lat, lon)
+                            : simulateAscent(perturbedProfile, apogee, launchAngleDeg, launchAzimuthDeg, ascentRate, lat, lon);
                         ascentDx = ascentResult.dx;
                         ascentDy = ascentResult.dy;
                         ascentPath = ascentResult.path;
