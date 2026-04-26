@@ -701,28 +701,61 @@ select:focus {
 }
 
 /* ===== Toast Notifications ===== */
-/* Temporary messages that appear at the bottom center of the screen */
-.toast {
+/* Vertical stack of messages anchored at the bottom center of the screen.
+   Newest toast appears on top; the container is click-through so the toasts
+   themselves are the only interactive areas. */
+.toast-stack {
     position: fixed;
     bottom: 1.5rem;
     left: 50%;
     transform: translateX(-50%);
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 0.5rem;
+    z-index: 2000;
+    pointer-events: none;
+    max-width: calc(100vw - 2rem);
+}
+
+.toast {
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 0.6rem 1.2rem;
+    padding: 0.6rem 0.6rem 0.6rem 1.2rem;
     font-size: 0.85rem;
-    z-index: 2000;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    pointer-events: auto;
     animation: fadeInUp 0.3s ease;
 }
+
+.toast-msg { flex: 1; }
+
+.toast-close {
+    background: transparent;
+    border: none;
+    color: inherit;
+    opacity: 0.6;
+    font-size: 1.1rem;
+    line-height: 1;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    cursor: pointer;
+}
+.toast-close:hover { opacity: 1; }
+
+/* Warning toast variant: yellow border and text */
+.toast.warning { border-color: #f0c54a; color: #f0c54a; }
 
 /* Error toast variant: orange border and text */
 .toast.error { border-color: var(--accent); color: var(--accent); }
 
 /* Toast entrance animation: fade in and slide up */
 @keyframes fadeInUp {
-    from { opacity: 0; transform: translateX(-50%) translateY(10px); }
-    to { opacity: 1; transform: translateX(-50%) translateY(0); }
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
 }
 
 /* ===== Results Header ===== */
@@ -1266,6 +1299,10 @@ input.auto-filled {
     white-space: nowrap;
 }
 .fmr-marker-label::before { display: none; }
+
+/* When the map legend is collapsed, hide the redundant on-map text labels
+   (Launch / Apogee / Landing). The marker icons and trajectory overlays remain. */
+.legend-collapsed .fmr-marker-label { display: none; }
 
 /* ===== Easter Egg ===== */
 @keyframes rocketLaunch {

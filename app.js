@@ -336,6 +336,7 @@ function initMapLegend() {
             const collapsed = div.classList.toggle('collapsed');
             btn.textContent = collapsed ? '+' : '−';
             btn.title = collapsed ? 'Expand' : 'Collapse';
+            map.getContainer().classList.toggle('legend-collapsed', collapsed);
         });
         return div;
     };
@@ -973,6 +974,7 @@ function renderResults(dispersion, lat, lon) {
     renderResultCards(dispersion);
     renderWindTable(dispersion);
     renderAllScenarios();
+    renderComparisonTable();
 
     resultsPanel.hidden = false;
 }
@@ -1315,14 +1317,40 @@ $('pin-scenario-btn').addEventListener('click', pinScenario);
 // UTILITIES
 // ============================================================
 
-// Shows a temporary notification at the bottom center of the screen.
-// Auto-removes after 3.5 seconds.
+// Shows a notification in a vertical stack at the bottom center of the screen.
+// Newest toasts appear on top. Each toast has an X button for manual close.
+// Auto-dismiss: info = 3.5s, warning/error = 8s. Stack capped at 6.
 function showToast(msg, type = 'info') {
+    let stack = document.getElementById('toast-stack');
+    if (!stack) {
+        stack = document.createElement('div');
+        stack.id = 'toast-stack';
+        stack.className = 'toast-stack';
+        document.body.appendChild(stack);
+    }
+
     const el = document.createElement('div');
     el.className = `toast ${type}`;
-    el.textContent = msg;
-    document.body.appendChild(el);
-    setTimeout(() => el.remove(), 3500);
+
+    const text = document.createElement('span');
+    text.className = 'toast-msg';
+    text.textContent = msg;
+    el.appendChild(text);
+
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'toast-close';
+    close.setAttribute('aria-label', 'Dismiss notification');
+    close.textContent = '×';
+    el.appendChild(close);
+
+    const timeoutMs = (type === 'warning' || type === 'error') ? 8000 : 3500;
+    const timer = setTimeout(() => el.remove(), timeoutMs);
+    close.addEventListener('click', () => { clearTimeout(timer); el.remove(); });
+
+    stack.prepend(el);
+
+    while (stack.children.length > 6) stack.lastElementChild.remove();
 }
 
 // Displays a form validation error below the submit button.
